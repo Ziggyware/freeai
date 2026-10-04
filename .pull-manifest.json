@@ -1,0 +1,306 @@
+{
+ "README.md": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "b04a019fb0a6c758e80e71c0a03e40d754d25e6ed4f61d55579531a89b6cac90"
+ },
+ "_ai-lab.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "9c0f7baac8be7b84580e0733ebd04134b8b5d564dd6af36f457a0fd78d4e4d8e"
+ },
+ "_cortex-rest-api.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "242a478af6db9472f450a35a3979f206161bcf5e822dbdf8bae1e4e300a61dd3"
+ },
+ "_cortex-websocket.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "3c8c2eb57155c98eb5bebd5de6040a24bc1e493b1a3612a4675c8015b4967769"
+ },
+ "_db-bak.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "34476af356ff559ee2b879f4a49c19fb9c2811761476c9e6a0e92e3803dd3233"
+ },
+ "_db2.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "5c355cdf057e4383615fd7615d3b9e91592dc9e119c693ee827b73e33b1a901d"
+ },
+ "_inference-router-dev.tsx": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "45552586838ef276e003344737eb5fe091b4dcd879777db8f6757156817c8087"
+ },
+ "_inference-router.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "fe28c4646600710e7519feb2c850e141b8d8052fe259407991f64b1cea6c018b"
+ },
+ "_valtown-api.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "b28dc55c16ad0d470661c7c36aad4ab5641b95b003610c8d9d6217cb9c701eaa"
+ },
+ "_valtown-file-editor.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "14073ebbc73672743a5df966042db59daf51a2195c3da677e7e21db097556210"
+ },
+ "_valtown-workspace.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "bd880a834ffc2f22ac5bd8dc66ddc82c3b6b9e0cc1201701346c69f68a3ab443"
+ },
+ "app-boundary.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "9daaddaf513538e66abb98d8bad79170a53c3ca573519414a586404a7a88c72d"
+ },
+ "app-build-wire.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "b6f6bf11ba3ff97e5c9ff1f89300c93eaf1ca517ad0a612188b654ce5c446067"
+ },
+ "app-build.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "9ad2140cd61d6dfee504a0a6bd0ba4469b39ace2a128322d033fe96e30e17903"
+ },
+ "app-compact.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "40c0bcbbc0960f465d697fd7ddff4977d6516e15182e4768ff9a42635e65a9cc"
+ },
+ "app-helpers.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "0d675faa35e0c5c48ceb71d59e3a70fc2a90a002fedd3c1816dc62680ff91484"
+ },
+ "app-infer.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "ecf22dd776f9d65690bb617a44189110457f47eceb3ae2327cdae5a03d2eaa25"
+ },
+ "app-meter.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "6f5bdff828ea805cad03cc6b33271445a8684cc2151141c546bac4c378f06b9c"
+ },
+ "app-settings.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "971abf48ea0750ada18bd0d4f9b4f28f5914d1b6d2c7f8afabc6e3e95a3cdc9e"
+ },
+ "app-swarm.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "9b492f26a42304b59e054f213df526c48cf247974882fe71fb2458dcfd6b4180"
+ },
+ "app-tools.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "8ffa9ae15a2a49e1ce4de1a84a977edd357d26f3cc9fa7eab944371c79a74865"
+ },
+ "app.tsx": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "05a716702b4f5aff48c6f4eb4983fbd30bcdddcb643235cbd5fd2bcd92867819"
+ },
+ "artifacts.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "6fb5f050a51418d2095c4871d92ebc279c19fde82fd768e4efded1adeff25422"
+ },
+ "brain.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "84d63c6967ebcc6c456f8973255d73de96ef2f2d35a1d02342c7158ff00287d7"
+ },
+ "catalog-free.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "50fa6164f671483e092ed8412e85b587abf1e653b9269c760bbf1c1e847696c6"
+ },
+ "catalog-paid.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "75b56d9b06fa59150b8f4ba2290ea8cd5638761950e532c5f2821d591579f16c"
+ },
+ "catalog.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "1580a8669382075fdc87b38d68aa60c2d07cda625b403bfdb824b9fd450cebb0"
+ },
+ "db.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "2e3e6eb87d088af6bdc6be88f38c45398ab6c7bf90f63564eff649a2fcf57f72"
+ },
+ "e2e10.mjs": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "e26663e574444ffbdca91ece7b4a58c256ebe6ffd22f8a112898e69b781d8d00"
+ },
+ "e2e11.mjs": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "a533e0192a0a3fd6ea948542f7adb08e98a257d6af2fb0325b9cdfe9d2f5f7be"
+ },
+ "e2e12.mjs": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "e89ac8f757f7526b592a5f166aa44a2b45a9b4453b9a2e5d5c6376a1a4ed7cfe"
+ },
+ "e2e13.mjs": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "d3ed673ba10fb7b13701ba2e277eb69d446042bb4f5d0a30bcfa0d930c8c007e"
+ },
+ "e2e14.mjs": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "c6dec53283fd8d7aa6e371267cf0db5036a163ff53f5269c0fb363cfd66722d3"
+ },
+ "e2e15.mjs": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "ee2bb5a95d20386c7278714d30be9595aebf98dcca700aa19d1b9150fb6be085"
+ },
+ "e2e9.mjs": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "806b10bbca5a94e2884d1125ad228b390ba9ee857a1266a9ce09184eeaf265d8"
+ },
+ "errors.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "88d495e2846f7e3117c25213949fdb7a30a40c9eb1e6d5e6bc663b4ed4cf2d6f"
+ },
+ "inference-provider.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "23617ebfb2b9bede326552fd96b18d90f08bcc7fdcc08c3d6aebad198ddd93ec"
+ },
+ "issues.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "a587434642da8da5b7c69b39d462bc5716912c75a304d547e25368b6eb3224ef"
+ },
+ "lint-portability.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "1ffe9bd96c270b68eab40ebbee198290f253fb154a54d80004a22db1f80af4a5"
+ },
+ "main-build-script.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "715c405d471ddb31179f0124c8942eb046add0a303bf8ce06117f853b1d5f780"
+ },
+ "main-html.tsx": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "0d7853eee9f97e6dc4f945e0de99d670a0cd2d83d30c9883a10a4f6e6a136ca0"
+ },
+ "main-script.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "45c3145f7bb44899dec176461fd8efde8044a66dced057fb161392411c4c586a"
+ },
+ "main-style.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "64ad43906cb2dcbc7a3591399b2f142a58f44068530777785d603bdf747c6ce2"
+ },
+ "mcp-client.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "fa2759fa3171b5ce7af7c0659f384e131c6e85c371a387b08cccd64e887a583a"
+ },
+ "omni-client.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "ff4f7a6e17ed9edba7b10cda252d380136bf84d6e293f3413fbd514bedd8df31"
+ },
+ "openrouter-providers.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "bc69620f309d32546dfd5fec1e63f215c433b11f851a83acd02756aa3aff39d4"
+ },
+ "out.txt": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ },
+ "plan.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "9a68c92eaab70358acdbb42d9eaded820a39a7f95aaa73681c35458e270c4ee0"
+ },
+ "prompt-examples.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "227d75cfecccc0bcceda1e6fe83dbab490f0a864e372dc13877074b6bd84b323"
+ },
+ "prompts.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "79ac31629980aebae5733a802c984dd7df2fc7a1b988bb71cd4c04c7ff70b054"
+ },
+ "quality-report.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "1213853c098fb997fdf37e7e022045929e0f9841cee77a52ca1fee58dcdd4aa9"
+ },
+ "rate-limit-tracker.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "02c1c7283d9c18d5e68e306c06dd5ff5c785034e01ffcf1be2be3f74c7060e83"
+ },
+ "router-attempt.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "b530d91017297d877da59cf8be164696c65942f5e7e5fed8fb9847da4aefb68c"
+ },
+ "router-core.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "87ade6fd334786ff0038aefbf87d6d4d7ac3dc4b917c95abdd9b768fecafd45c"
+ },
+ "router-discover.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "8203ac2ba423296ce3eaddc34b4f58e510b4c43ebe7267eabed0113e261394ad"
+ },
+ "router-openai.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "4fa91772059c42aac1705a4ee3c509993486207608870ef932fbb046c5775d78"
+ },
+ "router-score.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "c6bdc4de933286c39cbdae650ddad8a1309870d0e43ffd4249964751b4a1d826"
+ },
+ "router-state.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "ae125d0cd07c30a210260a1dbd05b8544735a589b594f6e0557f20010f248ffb"
+ },
+ "router.tsx": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "106c3793b0ce45660b4bbdc8150c1ec2bca8a0ded781e1bf6cae75bd441fb8c1"
+ },
+ "salvage.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "948b235eb63cf8b6a7a9d22213d87320697ab29a97827ec4b70010784d194753"
+ },
+ "scheduler-cron.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "c7c28457611db2d57d5633fb46cb82401ba264dfa06cf50cf0d94c030c60be96"
+ },
+ "scheduler-tasks.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "f907270ee4bdfc6a4216f0a6da5fce54e13c01497b87c30ddb2fd3c9d78c1228"
+ },
+ "scheduler.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "9d6b7d4bcbdedfecd810456b89218ff73ef454947d6008692a7e53349256dbab"
+ },
+ "swarm-fanout.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "d67c9452be85064831c44a207e57bd61191642a48113079f284d5e5602eac004"
+ },
+ "telemetry.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "9c45fa6e66e42e2f4d51ad4969add31ec4ee61a90e16a6578fe5420458c2b2d4"
+ },
+ "test-inference.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "4b80f59a5ebf31a1ad804e4876e24d87aa7eae37d96393a3cfc8c71e296ea69e"
+ },
+ "test.txt": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ },
+ "text-chunker.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "311b7caa5b7c5280a7d5c0c3a5da1eda3018e5fe732c795bcfea7a9dbe20df76"
+ },
+ "timing.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "f8a2127d9a655b96894308b2f4110d4967760c7485ce2601fb26580a0935fa57"
+ },
+ "ui-artifacts-script.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "79403fe4215105d42e16f088aa22a164cb659291069687c49454d1a5023246a4"
+ },
+ "ui-artifacts.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "e7fdeb693b974d902221626360d736711a81ff1deb9c873ca32501143dd6d3d7"
+ },
+ "ui-markdown.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "77662bdc050330978a5049c604114b9916d07defb6e70185d072f004d628ea26"
+ },
+ "ui-settings.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "133292526f608caa6d8b241e99d482fdc38665e03abf1fcfd87d0711a8604577"
+ },
+ "ui-style-md.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "cfb674d2ff842bc2547ae5fb21785069169a3dc47c9afa067031a49b0687898e"
+ },
+ "ui-style-settings.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "5b32e3a8f34c5d8632218cdbb06e881735db84b4aa20eebe1a7896dcc45c562d"
+ },
+ "ui-timeline.ts": {
+  "at": "2026-10-04T15:04:46+00:00",
+  "sha": "767faa664896498de9eb01dc0788788159cacfa3cdeb38edf84e2591be483d82"
+ }
+}
