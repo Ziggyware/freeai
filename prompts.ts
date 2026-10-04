@@ -155,7 +155,7 @@ WHAT THE USER ACTUALLY ASKED FOR, VERBATIM — this is the thing being built, an
 """
 Everything below (design document, manifest, purpose) is an elaboration of that sentence. Where any of it contradicts the sentence, the sentence wins, and say so in a one-line comment at the top of the file.
 
-NO BUILD STEP: plain JavaScript only. No TypeScript syntax (no type annotations, no interfaces, no "as" casts, no generics), no JSX. The browser executes this file exactly as you write it and throws a SyntaxError at parse time on the first type annotation or JSX tag. Write it as an ES module — import what you use from the sibling files named in the manifest, and export what the manifest says you export. If you call a function from another file you MUST import it; if the manifest says you export a name you MUST `export` it. Never call a function you have not imported or defined in this file. If this file is index.html, every <script src> that loads a module MUST be type="module".
+NO BUILD STEP: plain JavaScript only. No TypeScript syntax (no type annotations, no interfaces, no "as" casts, no generics), no JSX. The browser executes this file exactly as you write it and throws a SyntaxError at parse time on the first type annotation or JSX tag. Write it as an ES module — import what you use from the sibling files named in the manifest, and export what the manifest says you export. If you call a function from another file you MUST import it; if the manifest says you export a name you MUST \`export\` it. Never call a function you have not imported or defined in this file. If this file is index.html, every <script src> that loads a module MUST be type="module".
 Purpose: {{purpose}}
 Must export/define: {{exports}}
 May import (only these): {{imports}}
