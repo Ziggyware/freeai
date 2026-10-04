@@ -65,7 +65,9 @@ export async function designApp(ask: string, session: string, rawSettings: any, 
   });
   const r = await meter.call(
     [{ role: "system", content: "Output only the markdown design document." }, { role: "user", content: prompt }],
-    undefined, settings.model ?? "coder", { expect: 6000, temperature: 0.3 },
+    // A design document is a compact hand-off, not a second large answer. Keep its output bounded so it
+    // cannot spend the whole provider window before the planner or file steps get a turn.
+    undefined, settings.model ?? "coder", { expect: 1200, maxTokens: 1800, temperature: 0.3 },
   );
   const text = String(r?.message?.content ?? "").replace(/^```(?:markdown|md)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
   if (text.length < 200) throw Object.assign(new Error(`the designer returned ${text.length} characters, which is not a design document`), { status: 503, retryable: true });
@@ -84,7 +86,7 @@ export async function planApp(ask: string, session: string, rawSettings: any, d:
   const meter = new PassMeter(3, () => {}, settings.model, settings, opts.deadline ?? null);
   const skillsOn = activeSkills(settings.skills, ask);
   const prompt = meter.p("architect", { ask, design: String(opts.design ?? "(no design document was produced; derive the file list from the ask alone)"), user: settings.system ? `\nUser instructions: ${settings.system}\n` : "", skills: skillsOn.length ? "\n" + skillsOn.map((k: any) => renderPrompt("skill", { name: k.name, body: k.body }, settings.prompts)).join("\n") : "" });
-      const r = await meter.call([{ role: "system", content: "Output only JSON." }, { role: "user", content: prompt }], undefined, settings.model ?? "coder", { expect: 3000, temperature: 0.2 });
+      const r = await meter.call([{ role: "system", content: "Output only compact JSON." }, { role: "user", content: prompt }], undefined, settings.model ?? "coder", { expect: 2400, maxTokens: 3000, temperature: 0.2 });
       const raw = String(r?.message?.content ?? "");
       const j = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
       const manifest = JSON.parse(j);
@@ -197,7 +199,9 @@ export async function buildFileOnce(session: string, id: number, manifest: any, 
     const compact = manifest.files.map((f: any) => `${f.path}: ${f.purpose}${f.exports?.length ? ` — exports ${f.exports.join(", ")}` : ""}`).join("\n");
     const extra = directives.length ? "\n\nSUPERVISOR DIRECTIVES (apply all):\n" + directives.map((x) => "- " + x).join("\n") : "";
     const prompt = meter.p("builder", { ask: String(manifest.ask ?? "(the original request was not recorded for this job)"), title: String(manifest.title ?? ""), path, purpose: spec.purpose, exports: spec.exports?.join(", ") || "(none)", imports: spec.imports?.join(", ") || "(none)", shared: String(manifest.shared ?? ""), manifest: compact, notes: spec.notes || "(none)", features: [].concat(manifest.features ?? []).map((x: unknown, i: number) => `${i + 1}. ${String(x)}`).join("\n") || "(see purpose)", visual: String(manifest.visual ?? "(designer's choice: tokens, dark default, real identity)") }) + extra;
-      const r = await meter.call([{ role: "system", content: "You write one complete source file. Output only a fenced code block." }, { role: "user", content: prompt }], undefined, settings.model ?? "coder", { expect: 6000, temperature: 0.2 });
+      // One file per step and a hard output cap keep model work proportional to the scheduler lease; do
+      // not let the generic 16k-token build default turn a single file into a whole-project generation.
+      const r = await meter.call([{ role: "system", content: "You write exactly one complete source file, ≤ 180 lines. Output only its fenced code block; do not include other files or explanations." }, { role: "user", content: prompt }], undefined, settings.model ?? "coder", { expect: 3000, maxTokens: 4000, temperature: 0.2 });
       const raw = String(r?.message?.content ?? "");
       const fence = raw.match(/```[\w.+-]*\s*\n([\s\S]*?)\n```\s*$/m) ?? raw.match(/```[\w.+-]*\s*\n([\s\S]*)$/m);
       let content = (fence ? fence[1] : raw).replace(/\n```\s*$/, "");

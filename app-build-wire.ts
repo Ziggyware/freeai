@@ -184,7 +184,9 @@ export function looksLikeAppBuild(text: string, hasArtifactFocus: boolean): bool
   if (t.length < 12) return false;
   if (/\b(fix|update|change|edit|refactor|rename|debug|explain|why|how do|what is|review)\b/i.test(t)) return false;
   const verb = /\b(build|create|make|write|generate|scaffold|implement)\b/i.test(t);
-  const noun = /\b(app|application|game|website|web site|site|dashboard|editor|tracker|tool|clone|simulator|visuali[sz]er|calculator|todo(?:s| list)?|page|widget|prototype|player|ide|workbench|kanban|timer|clock|paint|chat)\b/i.test(t);
+  // Explicit visual-artifact requests are builds too. Without these nouns, "create a 3D holographic star
+  // field" falls into the one-shot chat loop instead of the durable design → plan → one-file steps.
+  const noun = /\b(app|application|game|website|web site|site|dashboard|editor|tracker|tool|clone|simulator|visuali[sz]\w*|visualization|scene|star\s*field|shader|holograph\w*|particle\s*system|generative\s*art|visual\s*effect|animation|graphic|illustration|calculator|todo(?:s| list)?|page|widget|prototype|player|ide|workbench|kanban|timer|clock|paint|chat)\b/i.test(t);
   return verb && noun;
 }
 

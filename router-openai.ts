@@ -31,9 +31,8 @@ export async function handleChatCompletions(body: any): Promise<Response> {
     model: body.model, tools: body.tools, tool_choice: body.tool_choice,
     temperature: body.temperature, max_tokens: body.max_tokens, stream: !!body.stream,
     response_format: body.response_format,
-    // Was silently dropped: the client (app-infer.ts callInference) always sends this, meaning every
-    // per-provider attempt used the router's fixed default regardless of how much of the caller's own
-    // turn budget was actually left — see HARD_TIMEOUT_MS's comment in router-core.ts.
+    // The client sends both an absolute deadline and a remaining duration. routeInference slices this
+    // caller-owned budget across provider candidates instead of giving the first candidate the full cap.
     deadlineMs: typeof body.omni_deadline_ms === "number" && body.omni_deadline_ms > 0 ? body.omni_deadline_ms : undefined,
     // Preferred over the duration: an instant cannot be re-based by transport time (see app-infer.ts).
     deadlineAt: typeof body.omni_deadline_at === "number" && Number.isFinite(body.omni_deadline_at) ? body.omni_deadline_at : undefined,

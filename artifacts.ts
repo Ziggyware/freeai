@@ -170,7 +170,7 @@ export function lintArtifact(files: ArtFile[]): string[] {
 /** Quality report against the virtuoso rubric. Heuristic and deliberately demanding: the user's standing rule is that a
  *  "basic" artifact is a failed artifact. Returned as `quality` (separate from `issues`), fed to the finish gate for
  *  app-scale asks and to the completion audit. Each string is an instruction the model can act on. */
-export const APP_RX = /\b(app|application|game|editor|dashboard|simulat\w*|tool|ide|player|visuali[sz]\w*|engine|synth\w*|tracker|planner|studio|workbench|console|explorer|builder|designer|sequencer|daw|calculator|clone)\b/i;
+export const APP_RX = /\b(app|application|game|editor|dashboard|simulat\w*|tool|ide|player|visuali[sz]\w*|visualization|scene|star\s*field|shader|holograph\w*|particle\s*system|generative\s*art|visual\s*effect|animation|engine|synth\w*|tracker|planner|studio|workbench|console|explorer|builder|designer|sequencer|daw|calculator|clone)\b/i;
 export function qualityReport(files: ArtFile[]): string[] {
   const out: string[] = [];
   // `text()` below is called ~15 times in this function (once per rubric check); it used to re-filter and

@@ -46,15 +46,14 @@ For each vendor's `keyEnv` (see `catalog-free.ts`, `catalog-paid.ts`): `GROQ_API
 
 | upstream | action |
 |---|---|
-| 404 / model-not-found / tier-not-allowed | mark that model dead 1 h, try next model; after the list, pick from live `/models` by the vendor's `prefer` regex and remember it |
-| 413 / "Request too large" / "Limit N, Requested M" | shrink `max_tokens` to fit and retry the same model; an output ceiling ("OTPM", "max_tokens") is remembered 15 min per model (`caps` in `/health`) |
-| 429 | cool the instance for `Retry-After` (≤15 min) or 60 s |
-| 401 / 403 | cool the instance 1 h |
-| 5xx / timeout (120 s) / network | breaker: 2 strikes → 25 s |
+| Provider error (including 4xx/5xx) | Try the next configured instance in order; an unknown requested model is returned as 404 |
+| Prompt too large | The app client trims history and retries with a smaller prompt, while its deadline can still fund another routed call |
+| 429 / timeout / network | Try the next instance; the app may retry the route if enough time remains |
+| Deadline or admission queue exhausted | Stop when another minimum attempt cannot fit; return 503 with attempted and skipped providers |
 
-After the first pass over every vendor, the router retries up to 2 more rounds — immediately for transient failures, or after waiting for the soonest cooldown when that fits the deadline. With `omni_deadline_ms` set, a vendor that cannot finish in the time left is skipped while a faster one is queued, and `max_tokens` is capped to what the vendor can stream before the deadline (a `finish_reason: "length"` reply beats a timeout — the client continues it).
+With a caller deadline, routing divides the remaining wall-clock across up to three candidates instead of letting the first slow provider consume the whole grant. Each per-provider slice covers headers and the complete non-streaming response body; fast failures free their unused time for more candidates. Admission-queue waits are cancelled at the same deadline. Larger visual/app builds (including 3D scenes, shaders, and star fields) use the durable design → plan → one-file-at-a-time build pipeline, progressing in small bounded steps rather than one oversized response.
 
-State lives in `omni_state` (SQLite) so it survives isolate recycling. `GET /health` shows what is cooling, dead, resolved, and capped.
+Provider usage counters live in `provider_stats`, and saved model bindings in `omni_router_config`; both survive isolate recycling. `GET /health` reports configured instances and their request/success/failure counts.
 
 ## Routes
 
