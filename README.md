@@ -1,6 +1,10 @@
-# free-ai — omni router
+# free-ai
 
-OpenAI-compatible endpoint that fans out across every configured provider with per-instance circuit breaking, model-level fallback, and live model discovery. Endpoint: `https://router.val.run`.
+A free AI that **builds applications**. You describe an app; it plans the files, writes them, heals the seams (module tags, missing exports, TypeScript-in-JS), and serves a runnable artifact at `/artifact/<id>/`.
+
+The scheduled pipeline is `design → plan → build (one file per step) → integrate → verify → conform`. Builds survive a closed tab. `/build …` forces a build; `/fix` repairs the open artifact.
+
+It is also an OpenAI-compatible router that fans out across every configured provider with per-instance circuit breaking, model-level fallback, and live model discovery. Endpoint: `https://router.val.run`.
 
 ## Call it
 

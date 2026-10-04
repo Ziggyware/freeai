@@ -64,7 +64,7 @@ export function validatePlan(plan: Plan): string[] {
 
 
   // A plan nobody can finish is a plan that will report itself incomplete. Better to say so now.
-  if (files.length > 24) out.push(`the plan has ${files.length} files, which is more than one build can finish — merge related modules until it is 24 or fewer`);
+  if (files.length > 10) out.push(`the plan has ${files.length} files, which is more than one build can finish reliably — merge related modules until it is 8 or fewer`);
   return out.slice(0, 10);
 }
 

@@ -182,7 +182,7 @@ export function qualityReport(files: ArtFile[]): string[] {
   const css = files.filter((f) => /\.css$/i.test(f.path)).map((f) => f.content).join("\n") + files.filter((f) => /\.html?$/i.test(f.path)).map((f) => (f.content.match(/<style[\s\S]*?<\/style>/gi) ?? []).join("\n")).join("\n");
   const lines = files.filter((f) => !f.content.startsWith("data:")).reduce((n, f) => n + f.content.split("\n").length, 0);
   const has = (rx: RegExp) => !!text(rx);
-  if (files.length < 8 || lines < 900) out.push(`scale: ${files.length} files / ${lines} lines — a product is ≥ 8 files and ≥ 900 lines; add the missing subsystems (state store, input, persistence, help panel, settings, export) as real files`);
+  if (files.length < 3) out.push(`scale: ${files.length} file(s) — split into index.html, a stylesheet, and at least one .js module so the app is editable`);
   if (!files.some((f) => /^readme\.md$/i.test(f.path))) out.push("README.md missing — list the features, controls, how to run, and the file map");
   else { const n = (files.find((f) => /^readme\.md$/i.test(f.path))!.content.match(/^\s*(?:[-*]|\d+[.)])\s+/gm) ?? []).length; if (n < 10) out.push(`README.md lists ${n} bullet items — enumerate ≥ 10 implemented user-facing features and the keyboard shortcuts`); }
   if (has(/<canvas\b/i) && !has(/devicePixelRatio/)) out.push("canvas is not scaled by devicePixelRatio — blurry on every HiDPI screen; size the backing store by dpr and ctx.scale/viewport accordingly");

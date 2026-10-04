@@ -10,7 +10,8 @@ import { T } from "./timing.ts";
 import { buildProgress, cancelJob, getJobState, registerBuildHandlers, startBuild, startRepair } from "./app-build.ts";
 import { tick } from "./scheduler.ts";
 import { buildFileOnce, conformApp, designApp, PLACEHOLDER_MARK, planApp, type SwarmDeps } from "./app-swarm.ts";
-import { lintArtifact, listFiles, saveMany } from "./artifacts.ts";
+import { listFiles, saveMany } from "./artifacts.ts";
+import { healAndSave, issuePath } from "./heal.ts";
 import { importsOf } from "./plan.ts";
 
 let wired = false;
@@ -74,7 +75,11 @@ export function wireBuild(d: SwarmDeps): void {
       // The ask rides ON the manifest object rather than through another parameter: planApp already writes
       // it into the saved manifest.json, so this is the same field the artifact ships with.
       const manifestWithAsk = { ...(st.manifest ?? {}), ask: st.manifest?.ask ?? st.ask ?? "" };
-      const r = await buildFileOnce(String(st.session ?? "default"), Number(st.artifactId), manifestWithAsk, path, st.settings ?? {}, d, withDesign);
+      const lintForPath = ([] as string[]).concat(st.issues ?? []).filter((i) => issuePath(String(i)) === path);
+      const withLint = lintForPath.length
+        ? [...withDesign, "LINT DEFECTS to fix in this file — the previous write of it did not run:\n" + lintForPath.map((x) => "- " + x).join("\n")]
+        : withDesign;
+      const r = await buildFileOnce(String(st.session ?? "default"), Number(st.artifactId), manifestWithAsk, path, st.settings ?? {}, d, withLint);
       return { issues: r.issues ?? [], truncated: !!r.truncated };
     },
 
@@ -84,6 +89,7 @@ export function wireBuild(d: SwarmDeps): void {
     // on every run.
     integrate: async (_job, st, issues) => {
       const id = Number(st.artifactId);
+      const session = String(st.session ?? "default");
       const lf = await listFiles(id);
       if (!lf) throw new Error("artifact vanished before integration");
       const index = lf.files.find((f) => /^index\.html?$/i.test(f.path));
@@ -92,12 +98,32 @@ export function wireBuild(d: SwarmDeps): void {
         // Leaving it would ship a page that says "building 8 files..." forever.
         return { repaired: false, note: "index.html is still the plan-time placeholder", issues };
       }
-      if (!issues.length) return { repaired: false, note: "cross-file lint clean; nothing to repair", files: lf.files.length };
-      const worst = issues.slice(0, 12);
-      const r = await buildFileOnce(String(st.session ?? "default"), id, st.manifest, index?.path ?? lf.files[0].path, st.settings ?? {}, d,
-        ["Integration repair pass. Fix exactly these cross-file defects and change nothing else:", ...worst]);
-      const after = await listFiles(id);
-      return { repaired: !!r.written, fixedAgainst: worst, remaining: after ? lintArtifact(after.files) : issues };
+      // MECHANICAL FIRST. type="module", missing exports, unlinked CSS, TypeScript-in-.js — none of
+      // those need a model, and asking the model to "fix" them by rewriting index.html (the old
+      // behaviour) left the actual broken files untouched.
+      const healed = await healAndSave(session, id);
+      if (!healed.issues.length) {
+        return { repaired: healed.changes.length > 0, mechanical: healed.changes, remaining: [], files: lf.files.length };
+      }
+      // Rebuild the file the remaining issues actually name, not whichever file happens to be the entry.
+      const counts = new Map<string, number>();
+      for (const iss of healed.issues) {
+        const p = issuePath(iss);
+        if (!p) continue;
+        counts.set(p, (counts.get(p) ?? 0) + 1);
+      }
+      const worstPath = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
+        ?? index?.path
+        ?? lf.files[0].path;
+      const inManifest = (st.manifest?.files ?? []).some((f: any) => f.path === worstPath);
+      if (!inManifest) {
+        return { repaired: healed.changes.length > 0, mechanical: healed.changes, remaining: healed.issues, note: `${worstPath} has issues but is not in the manifest, so it cannot be rebuilt here` };
+      }
+      const mine = healed.issues.filter((i) => issuePath(i) === worstPath).slice(0, 12);
+      const r = await buildFileOnce(session, id, st.manifest, worstPath, st.settings ?? {}, d,
+        ["Integration repair. Fix exactly these defects in THIS file and change nothing else:", ...mine]);
+      const after = await healAndSave(session, id);
+      return { repaired: !!r.written || after.changes.length > 0, mechanical: [...healed.changes, ...after.changes], fixed: worstPath, remaining: after.issues };
     },
   });
 }
@@ -118,7 +144,7 @@ export function looksLikeAppBuild(text: string, hasArtifactFocus: boolean): bool
   if (t.length < 12) return false;
   if (/\b(fix|update|change|edit|refactor|rename|debug|explain|why|how do|what is|review)\b/i.test(t)) return false;
   const verb = /\b(build|create|make|write|generate|scaffold|implement)\b/i.test(t);
-  const noun = /\b(app|application|game|website|web site|site|dashboard|editor|tracker|tool|clone|simulator|visuali[sz]er)\b/i.test(t);
+  const noun = /\b(app|application|game|website|web site|site|dashboard|editor|tracker|tool|clone|simulator|visuali[sz]er|calculator|todo(?:s| list)?|page|widget|prototype|player|ide|workbench|kanban|timer|clock|paint|chat)\b/i.test(t);
   return verb && noun;
 }
 

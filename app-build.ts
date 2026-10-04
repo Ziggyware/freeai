@@ -26,7 +26,8 @@ import { stepMs } from "./timing.ts";
 import { all, one, raw, run, sql } from "./db.ts";
 import { enqueue, jobStatus, registerHandler } from "./scheduler.ts";
 import { directivesFor, supervise as runSupervise } from "./brain.ts";
-import { lintArtifact, listFiles, missingRefs, saveMany } from "./artifacts.ts";
+import { lintArtifact, listFiles, missingRefs } from "./artifacts.ts";
+import { healAndSave, issuePath } from "./heal.ts";
 import { PLACEHOLDER_MARK } from "./app-swarm.ts";
 import { diffPlans, jobStepBudget, planOrder, taskDurations, taskGraph, type TaskRow, validatePlan } from "./plan.ts";
 
@@ -387,24 +388,34 @@ export function registerBuildHandlers(deps: BuildDeps): void {
         return { ok: false, complete: false, issues: ["artifact missing"] };
       }
       const planned: string[] = await plannedPathsFor(p.job, st);
-      const have = new Map(lf.files.filter((f) => isBuilt(f.content)).map((f) => [f.path, f.content]));
+      // Heal before judging. A missing type="module" or a missing export is a blank page, and it is
+      // cheaper to fix here than to spend another model call (or report the build complete-but-broken).
+      const healed = st.session && st.artifactId ? await healAndSave(String(st.session), Number(st.artifactId)) : { changes: [], issues: [] };
+      const lf2 = healed.changes.length ? await listFiles(st.artifactId) : lf;
+      const files = lf2?.files ?? lf.files;
+      const have = new Map(files.filter((f) => isBuilt(f.content)).map((f) => [f.path, f.content]));
       // "Present but empty" counts as missing. A zero-byte file satisfies a filename check and nothing else.
       const missing = planned.filter((path) => !have.has(path));
-      const issues = lintArtifact(lf.files);
-      const complete = planned.length > 0 && missing.length === 0;
+      const issues = healed.issues.length || healed.changes.length ? healed.issues : lintArtifact(files);
+      const broken = [...new Set(issues.map(issuePath).filter((path) => path && have.has(path) && planned.includes(path)))];
+      // `filesComplete` = every planned file exists. `ok` also requires a clean lint. A build that
+      // produced every file and still throws at parse time used to report itself complete — that is
+      // how "the app built" and "the app is a blank page" became the same status.
+      const filesComplete = planned.length > 0 && missing.length === 0;
+      const toRebuild = [...new Set([...missing, ...broken])];
 
-      // A JOB MAY NOT CREATE UNBOUNDED WORK. verify re-enqueues a build per missing file for 3 rounds,
+      // A JOB MAY NOT CREATE UNBOUNDED WORK. verify re-enqueues a build per missing/broken file for 3 rounds,
       // and the supervisor adds up to 4 per pass for 8 passes — neither knew about the other, so the
       // only ceiling was the scheduler's global queue-depth refusal, which protects the QUEUE, not this
       // job. A job that has spent its budget is not one more task away from working.
       const spent = await stepCount(p.job);
       const budget = jobStepBudget(planned.length);
-      if (missing.length && spent >= budget) {
-        await putJobState(p.job, { ...st, finishedAt: Date.now(), complete: false, missing, issues });
-        return { ok: false, complete: false, planned: planned.length, built: planned.length - missing.length, missing, issues, stoppedBy: `this job has run ${spent} tasks against a budget of ${budget}; ${missing.length} file(s) were never produced` };
+      if (toRebuild.length && spent >= budget) {
+        await putJobState(p.job, { ...st, finishedAt: Date.now(), complete: filesComplete, missing, issues, healed: healed.changes });
+        return { ok: false, complete: filesComplete, planned: planned.length, built: planned.length - missing.length, missing, issues, healed: healed.changes, stoppedBy: `this job has run ${spent} tasks against a budget of ${budget}; ${toRebuild.length} file(s) still need work` };
       }
-      if (missing.length && round < VERIFY_ROUNDS) {
-        const ids = await enqueue(p.job, missing.map((path, i) => ({
+      if (toRebuild.length && round < VERIFY_ROUNDS) {
+        const ids = await enqueue(p.job, toRebuild.map((path, i) => ({
           kind: "build",
           payload: { job: p.job, path },
           seq: 200 + round * 100 + i,
@@ -413,19 +424,20 @@ export function registerBuildHandlers(deps: BuildDeps): void {
         })));
         const last = ids[ids.length - 1];
         await enqueue(p.job, [{ kind: "verify", payload: { job: p.job, round: round + 1 }, seq: 299 + round * 100, needs: last, gate: "build" }]);
-        await putJobState(p.job, { ...st, complete: false, missing, issues });
-        return { ok: false, complete: false, planned: planned.length, built: planned.length - missing.length, missing, rebuilding: missing.length, round };
+        await putJobState(p.job, { ...st, complete: false, missing, issues, healed: healed.changes });
+        return { ok: false, complete: false, planned: planned.length, built: planned.length - missing.length, missing, issues, rebuilding: toRebuild.length, round, healed: healed.changes };
       }
 
-      await putJobState(p.job, { ...st, finishedAt: Date.now(), complete, missing, issues });
+      await putJobState(p.job, { ...st, finishedAt: Date.now(), complete: filesComplete, missing, issues, healed: healed.changes });
       return {
-        ok: complete && issues.length === 0,
-        complete,
+        ok: filesComplete && issues.length === 0,
+        complete: filesComplete,
         planned: planned.length,
         built: planned.length - missing.length,
         missing,
         issues,
-        ...(missing.length ? { gaveUpAfterRounds: round } : {}),
+        healed: healed.changes,
+        ...(toRebuild.length ? { gaveUpAfterRounds: round } : {}),
       };
     },
   });

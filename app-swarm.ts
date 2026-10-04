@@ -8,7 +8,8 @@ import { buildProgress, jobIdFor, jobTasks, startBuild } from "./app-build.ts";
 import { tick } from "./scheduler.ts";
 import { drainOne, driveQueue, DRAIN_HEADER, FANOUT_WIDTH } from "./swarm-fanout.ts";
 import "./scheduler-tasks.ts"; // handler registration is a side effect and must happen before any tick()
-import { lintArtifact, listFiles, saveMany } from "./artifacts.ts";
+import { lintArtifact, listFiles, saveMany, stripModuleSyntax } from "./artifacts.ts";
+import { stripTypeScript } from "./heal.ts";
 import { buildReport, formatRepairBrief, type ErrorReport } from "./errors.ts";
 import { activeSkills, normalizeSettings } from "./app-settings.ts";
 import { all, run, sql, unwrap } from "./db.ts";
@@ -198,8 +199,17 @@ export async function buildFileOnce(session: string, id: number, manifest: any, 
       const r = await meter.call([{ role: "system", content: "You write one complete source file. Output only a fenced code block." }, { role: "user", content: prompt }], undefined, settings.model ?? "coder", { expect: 6000, temperature: 0.2 });
       const raw = String(r?.message?.content ?? "");
       const fence = raw.match(/```[\w.+-]*\s*\n([\s\S]*?)\n```\s*$/m) ?? raw.match(/```[\w.+-]*\s*\n([\s\S]*)$/m);
-      const content = (fence ? fence[1] : raw).replace(/\n```\s*$/, "");
+      let content = (fence ? fence[1] : raw).replace(/\n```\s*$/, "");
       if (!content.trim()) throw Object.assign(new Error("the model returned no file content"), { status: 503, retryable: true });
+      // Models emit TypeScript into .js files. The browser throws at the first annotation, so the
+      // file as written is dead. Strip only when the original does not parse and the stripped version does.
+      if (/\.m?js$/i.test(path)) {
+        const parses = (s: string) => { try { new Function(stripModuleSyntax(s)); return true; } catch { return false; } };
+        if (!parses(content)) {
+          const stripped = stripTypeScript(content);
+          if (stripped !== content && parses(stripped)) content = stripped;
+        }
+      }
       if (!fence && !looksLikeFileContent(path, content)) {
         throw Object.assign(new Error(`the model replied with prose instead of a file for ${path} (no fenced code block, and the text is not file content): ${content.trim().slice(0, 80)}`), { status: 503, retryable: true });
       }
