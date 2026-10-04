@@ -185,6 +185,7 @@ const ART = (() => {
    *  the job path and sent once per (artifact, error set). */
   function escalateRepair(st, uniq, rounds, brief) {
     if (!cur) return;
+    if (typeof sendWith !== 'function') { askSt.textContent = 'cannot send \u2014 reload the page'; return; }
     if (st.escalated) { askSt.textContent = 'repair job already handed off \u2014 the BUILD card reports it (stop is on the card)'; return; }
     st.escalated = true;
     const v = { ...vars(), errors: String(brief || uniq.join('\n')).slice(0, 6000) };
