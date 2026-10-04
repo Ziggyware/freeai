@@ -416,7 +416,7 @@ async function sendWith(text, extra) {
     // Nothing moved it after that: the reply told the user to poll ?build_status and no code did. Drive it
     // here - main-build-script.ts polls until the job is settled, cancelled or stopped.
     //
-    // OUTSIDE own() ON PURPOSE: drive() checks `visible(session)` for every DOM write, so it is safe to
+    // OUTSIDE own() ON PURPOSE: drive() checks \`visible(session)\` for every DOM write, so it is safe to
     // start for a session the user has switched away from - and it MUST start, because otherwise the job
     // sits untouched until this browser happens to load that session again. A scheduled fix that only
     // begins when the user looks at it is the polling requirement wearing a different hat.
@@ -435,7 +435,7 @@ async function sendWith(text, extra) {
     // Completion audit says the ask is not finished: keep going with the remaining items (bounded, stop button aborts).
     const compLeft = extra.__compLeft ?? (forever ? Infinity : (SETTINGS.current().autoComplete ?? 4));
     // A TURN THAT HANDED OFF TO THE DRIVER IS NOT A TURN TO AUDIT. When the server escalated this ask into
-    // a job, `completion` describes the INLINE work ("the answer did not contain an artifact yet"), which is
+    // a job, \`completion\` describes the INLINE work ("the answer did not contain an artifact yet"), which is
     // no longer what is happening: continuing would send the model back to do by hand the work the queue is
     // about to do, against files it is about to change. The driver owns this ask from here.
     const rem = final.scheduled || final.escalated ? [] : (final.completion && !final.completion.done ? final.completion.remaining : []);

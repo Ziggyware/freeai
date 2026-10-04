@@ -30,8 +30,8 @@ const BUILD = (() => {
   const DIM = 'color:var(--dim);font-size:11px';
   // ONE DRIVER PER JOB, NOT ONE PER BROWSER. A running job is driven by a poll loop, and a loop that
   // stops because the user opened another chat is a loop that stops working for no reason: the job is
-  // per-session, the DOM writes are gated on `visible(session)`, so several loops can coexist and each
-  // keeps its own session's work moving. `runs[job]` is also the anti-double-drive guard.
+  // per-session, the DOM writes are gated on \`visible(session)\`, so several loops can coexist and each
+  // keeps its own session's work moving. \`runs[job]\` is also the anti-double-drive guard.
   const runs = {};                // job -> { job, session, cancelled, stopped }
 
   const remember = (s, j) => { try { if (j) localStorage.setItem(KEY + s, j); else localStorage.removeItem(KEY + s); } catch (e) { /* private mode */ } };
@@ -96,7 +96,7 @@ const BUILD = (() => {
         // four others; the task graph says which, and that is the difference between a progress bar and
         // an explanation. Falls back to the file rows when an older server does not send tasks.
         // FOR A REPAIR, THE ROWS ARE THE REPAIR'S TARGETS - not every build step the job ever had. The job
-        // id is shared with the artifact's original build, so `p.files` is mostly history; a card that lists
+        // id is shared with the artifact's original build, so \`p.files\` is mostly history; a card that lists
         // twelve files while correcting one is the reason a user cannot tell what is being fixed. The status
         // shown per target is the LATEST step for that path (a later round overwrites an earlier attempt).
         let rows = (p.tasks && p.tasks.length)
@@ -167,8 +167,8 @@ const BUILD = (() => {
       if (p.artifactId && typeof ART !== 'undefined' && visible(session)) { ART.listForSession(session); if (ART.current() && ART.current().id === p.artifactId) ART.refresh(p.artifactId); }
       const isRepair = p.kind === 'repair';
       // ── TERMINAL STATES, AS THE SERVER DEFINES THEM ──────────────────────────────────────────────
-      // `settled` is the server's answer to "will anything else happen?" — resolved, stopped, exhausted,
-      // or (for a build) the queue drained. `done` alone means "nothing is running RIGHT NOW", which is
+      // \`settled\` is the server's answer to "will anything else happen?" — resolved, stopped, exhausted,
+      // or (for a build) the queue drained. \`done\` alone means "nothing is running RIGHT NOW", which is
       // exactly the state a repair sits in between rounds, so it is never sufficient on its own.
       if (p.stopped) { reason = 'stopped \u2014 nothing further will run'; break; }
       if (isRepair && p.resolved) {
@@ -202,7 +202,7 @@ const BUILD = (() => {
       }
       // NOT SETTLED: a repair between rounds, or work still queued. Keep polling — the next poll IS the
       // engine that runs the next round — and only call it stalled when nothing moved AND nothing ran.
-      // PROGRESS IS THE STEP GRAPH MOVING, not one counter going up. `builtFiles` counts what exists on
+      // PROGRESS IS THE STEP GRAPH MOVING, not one counter going up. \`builtFiles\` counts what exists on
       // disk, so during a SECOND round of a one-file repair it is already 1 and stays 1 for the whole
       // round - which made an actively running repair look stalled. The activity string folds in the
       // round, the per-status step counts and the file count: any step claimed, finishing or failing
@@ -223,7 +223,7 @@ const BUILD = (() => {
       } else {
         idleRounds = 0;
       }
-      // ...and never while the queue has work: `ready`/`running` steps are the definition of "something
+      // ...and never while the queue has work: \`ready\`/\`running\` steps are the definition of "something
       // is happening", so a job mid-step is only stopped for the transport/server failures handled above.
       const busy = Number(by.running || 0) + Number(by.ready || 0) > 0;
       if (!betweenRounds && !busy && stall >= STALL_POLLS) {
@@ -233,11 +233,11 @@ const BUILD = (() => {
       if (polls === MAX_POLLS) reason = 'poll limit (' + MAX_POLLS + ') reached \u2014 the job is still queued and resumes if you ask again';
     }
     if (runs[job] === me) delete runs[job];
-    // A FAILURE THE USER NEVER SAW IS REMEMBERED. `remember(session, null)` cleared the job id on every
+    // A FAILURE THE USER NEVER SAW IS REMEMBERED. \`remember(session, null)\` cleared the job id on every
     // exit, so a repair that gave up while the tab was on another session existed only in the log: it was
     // gone on reload and the session looked like nothing had ever been asked. When the card was rendered
     // the user has seen the outcome, so the key is cleared; when it was not, the key survives and
-    // `resume()` re-reads the settled status and renders the final card the first time that session is
+    // \`resume()\` re-reads the settled status and renders the final card the first time that session is
     // opened (then clears it).
     const unseenFailure = !card && /^(nothing moved|no further repair round|could not fix|the repair job ended|the server stopped answering|poll limit)/.test(reason);
     remember(session, unseenFailure ? job : null);
@@ -270,7 +270,7 @@ const BUILD = (() => {
     active: () => Object.keys(runs),
   };
 })();
-// NO BUILD.stop() HERE. Switching sessions used to cancel the driver - and `stop()` cancels the JOB on the
+// NO BUILD.stop() HERE. Switching sessions used to cancel the driver - and \`stop()\` cancels the JOB on the
 // server too, so opening another chat killed a repair the user never asked to stop. The loops are
 // session-gated on every DOM write; they keep running, which is the whole promise of a background job.
 document.addEventListener('omni:session', (e) => { BUILD.resume(e.detail && e.detail.id); });
