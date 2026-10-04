@@ -11,9 +11,11 @@ import { env } from "./providers.ts";
  *  OpenAI SDK) should point at, and what error messages name. Override with
  *  OMNI_URL when the val is served from a custom domain. */
 export const SELF_URL = (env("OMNI_URL") || "https://free-ai.val.run").replace(/\/+$/, "");
-/** Kept as an alias: settings, docs and old saved configurations all say
- *  "router url", and blank means "the one built into this app". */
-export const INFERENCE_URL = SELF_URL;
+// There is deliberately no INFERENCE_URL any more. The name described a place
+// inference was sent to, and that place is this file's own import of router-api.ts.
+// Keeping it as an alias would keep alive the idea that there is somewhere else to
+// point at, which is the idea this change removes. A saved `routerUrl` of the old
+// router.val.run is folded back to "built-in" by app-settings.ts's normalizeRouter.
 
 /** What this loop spends around a router call that the router's own clock never
  *  sees: serializing the body, the request, and reading the response back.
