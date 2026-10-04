@@ -2,6 +2,7 @@
 // to keep each file under Val Town's 80 kB file-API limit.
 import { T } from "./timing.ts";
 import { normalizePromptOverrides, type PromptKey } from "./prompts.ts";
+import { env } from "./providers.ts";
 export interface Settings {
   model: string | null; // router alias/pin; null = auto
   reasoning: "low" | "medium" | "high" | null;
@@ -26,13 +27,34 @@ export interface Settings {
   vendorOrder: string[]; // vendors to try first, in order (every key slot of one before the next); [] = router default
   followup: boolean; // auto-continuation of unfinished work (client-issued): hide the synthetic user turn, skip plan/ensemble
 }
-const ROUTER_ALLOW = (Deno.env.get("OMNI_ROUTER_ALLOW") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+/** Hosts a saved router URL may point at. `.val.run` is allowed by suffix so a
+ *  fork of this app can be the router for another; anything else must be listed
+ *  in OMNI_ROUTER_ALLOW. Read lazily and guarded: Deno.env.get throws under a
+ *  restricted permission set, and settings normalisation runs on every request. */
+const routerAllow = (): string[] => (env("OMNI_ROUTER_ALLOW") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+
+/** The router this app used to call as a separate deployment. Every settings row
+ *  saved before the merge holds this string, and honouring it now would send each
+ *  turn out over HTTPS to a val that no longer exists — through the same
+ *  Cloudflare edge that blocks server-side fetches to *.val.run, which is why the
+ *  old app-infer.ts had to fake the hop by constructing a Request in memory. So it
+ *  is recognised and folded back into "built-in". */
+const LEGACY_ROUTER_HOSTS = new Set(["router.val.run", "free-ai.val.run", "freeai.val.run"]);
+
+/** `null` means "the router built into this app", which is the default and what
+ *  every existing deployment should resolve to. A non-null value means an operator
+ *  deliberately pointed this deployment at a different router. */
 export function normalizeRouter(x: any): Settings["router"] {
   if (!x || typeof x !== "object" || typeof x.url !== "string") return null;
+  const raw = x.url.trim();
+  if (!raw) return null; // blank is the built-in router, not an error
+  const key = typeof x.key === "string" && x.key ? x.key.slice(0, 200) : null;
   try {
-    const u = new URL(x.url);
-    if (u.protocol !== "https:" || !(u.hostname.endsWith(".val.run") || ROUTER_ALLOW.includes(u.hostname))) return null;
-    return { url: u.origin + (u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "")), key: typeof x.key === "string" && x.key ? x.key.slice(0, 200) : null };
+    const u = new URL(raw);
+    if (LEGACY_ROUTER_HOSTS.has(u.hostname)) return null;
+    if (u.protocol !== "https:") return null;
+    if (!(u.hostname.endsWith(".val.run") || routerAllow().includes(u.hostname))) return null;
+    return { url: u.origin + (u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "")), key };
   } catch { return null; }
 }
 export interface Focus { id: number; title: string; file: string; files: string[]; selection: string; errors: string[] }

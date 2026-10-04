@@ -153,7 +153,7 @@ export class PassMeter {
     return this.used;
   }
   // One call may legitimately have no trail at all (e.g. it hit a custom gen.router.url the user configured,
-  // which never goes through THIS val's router-core.ts) — silently skip rather than emit an empty node.
+  // which never goes through THIS app's router) — silently skip rather than emit an empty node.
   private recordRoute(r: InferResult): void {
     const attempts = r.meta?.attempts;
     if (!attempts?.length) return;

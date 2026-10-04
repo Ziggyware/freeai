@@ -9,6 +9,7 @@ import { clientStatusFor, installRejectionBackstop, RESPONSE_DEADLINE_MS, withBo
 import { maybeScheduleBuild, wireTurn } from "./app-build-wire.ts";
 import { clean, ensureSession, installHandlers } from "./app-boot.ts";
 import { handleIssues, ISSUE_TOOLS } from "./issues.ts";
+import { routerRoutes } from "./router-api.ts";
 import { BUILD_RX, callInference, type GenOpts, type InferResult } from "./app-infer.ts";
 import { compactMessage, handleCompact, liveChars, loadCompact } from "./app-compact.ts";
 import { deriveTitle, evalJs, getMemoryBlob, META_CLOSE, META_OPEN, parseMeta, parseTextToolCalls, preEstimate, retrieveFacts, salvageArtifactArgs, summarizeEvent, slimEvents, TOOL_ALIASES, type ToolEvent, webSearch, writeFact, readJsonBody } from "./app-helpers.ts";
@@ -254,7 +255,7 @@ export async function agentLoop(
       // fresh invocation fixes, so they hand off whether or not any tool got to run.
       const handoff = !!(e as any)?.budget || (e as any)?.status === 503;
       if (!toolEvents.length && !handoff) throw e;
-      // Bug this closes: routeInference() (router-core.ts) throwing ALL_PROVIDERS_EXHAUSTED (status 503) or
+      // Bug this closes: routeChat() (router.ts) throwing ALL_PROVIDERS_EXHAUSTED (status 503) or
       // NO_PROVIDERS_CONFIGURED mid-loop landed here same as any other error, but `budget` was ONLY ever set
       // by PassMeter.call()'s own `TURN_BUDGET` throw a few lines above (the wall-clock-left check) — a
       // completely different exhaustion. So a mid-turn provider exhaustion silently returned `truncated:
@@ -885,7 +886,7 @@ async function runAI(
     provider: result.meta?.provider ?? null, model: result.meta?.model ?? null, instance: result.meta?.instance ?? null, reasoning: result.reasoning ?? [], truncated: !!result.truncated,
     continuation: settings.continuation, followup: settings.followup, maxTokensSent: result.meta?.maxTokensSent ?? null, maxTokensAsked: result.meta?.maxTokensAsked ?? null, finishReason: result.meta?.finishReason ?? null, tokensOut: result.meta?.tokensOut ?? null,
     // attempts: how many providers the winning model call actually tried (main-script.ts's detail view already
-    // had a slot for this — it was always empty since nothing populated it until router-core.ts's trail existed).
+    // had a slot for this — it was always empty since nothing populated it until the router's trail existed),
     attempts: result.meta?.attempts?.length ?? null,
     telemetry: result.telemetry ?? null, toolEvents: slimEvents(result.toolEvents ?? []), skills: skillsOn.map((k) => k.name),
   });
@@ -958,6 +959,18 @@ async function handleRequest(req: Request): Promise<Response> {
   if (!init.ok) {
     return new Response(`DB init failed: ${init.error}`, { status: 500 });
   }
+
+  // THE ROUTER LIVES HERE NOW. It used to be a second val at router.val.run that this app called over
+  // HTTP — which Cloudflare in front of *.val.run blocked for server-side fetches from Val Town's own
+  // egress, so app-infer.ts was already faking the hop by constructing a Request and handing it to the
+  // other module's handler. One deployment, one boundary, one deadline: the OpenAI-compatible surface
+  // (/v1/chat/completions, /v1/models), the operator surface (/health, /api/providers, /api/models,
+  // /api/update, /api/reset, /api/reset-stats) and the matrix UI (/router) are all mounted here, and the
+  // app's own inference calls routeChat() as a function with no HTTP in between.
+  // Pathname-based, and every app route below is query-parameter based, so the two cannot collide; the
+  // one shared path, POST /, is claimed by the router only when it carries no query string at all.
+  const routed = await routerRoutes(req, url);
+  if (routed) return routed;
 
   // /artifact/<id>/<path> — multi-file artifacts served path-style so relative references resolve
   const am = url.pathname.match(/^\/artifact\/(\d+)(?:\/(.*))?$/);

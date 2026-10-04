@@ -1,7 +1,7 @@
 // EVERY TIMEOUT IN THE SYSTEM, IN ONE PLACE, KEYED BY THE CONTEXT IT APPLIES TO.
 //
 // Why this file exists, concretely: app-infer.ts's retry loop refused to retry with less than a literal
-// 4000ms left, while router-core.ts refused to contact a provider with less than 5000. Every remaining
+// 4000ms left, while the router refused to contact a provider with less than 5000. Every remaining
 // budget in that 1000ms-wide window produced a retry that reached ZERO of 34 providers, and the user was
 // shown "ALL_PROVIDERS_EXHAUSTED" — a provider-shaped message for two constants in two files disagreeing
 // by 1000ms. That is not a bug you fix once; it is a bug you make unrepresentable, by giving the numbers
@@ -167,7 +167,7 @@ if (violations.length) {
   throw new Error("timing.ts: invariant violation from environment overrides:\n" + violations.map((v) => "- " + v).join("\n"));
 }
 
-/** Re-exported so router-core.ts and the invariant checks share the same routing policy. */
+/** Re-exported so router.ts and the invariant checks share the same routing policy. */
 export const ROUTER_MIN_ATTEMPTS = T.routerMinAttempts;
 
 /** Allocate the remaining route deadline fairly across candidates. A slow provider must not be able to

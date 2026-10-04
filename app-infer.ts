@@ -1,58 +1,90 @@
 // Inference client (moved from app.tsx for the 80k-char limit): in-process router call, request shaping, size-bound retries.
 import { T } from "./timing.ts";
-import { ROUTER_MIN_ATTEMPT_MS } from "./router-core.ts";
-import routerHandler from "./router.tsx";
+import { ROUTER_MIN_ATTEMPT_MS } from "./router.ts";
+import { chatCompletions } from "./router-api.ts";
 import type { Settings } from "./app-settings.ts";
 import { normalizeMessages, shrinkMessages } from "./app-helpers.ts";
+import { env } from "./providers.ts";
 
-export const INFERENCE_URL = "https://router.val.run";
-// The router is a module of this val. Calling it in-process removes the val→val HTTP hop entirely: Cloudflare in front of
-// *.val.run blocks server-side fetches from Val Town's own egress ("Blocked", server: cloudflare) regardless of volume,
-// and every hop was also a second 60 s wall clock and a second invocation. HTTP is used only for a custom router URL.
-/** Call the router — in-process when it is this val, over HTTP when `routerUrl` points elsewhere.
- *
- *  The external branch MUST carry a timeout. Without one it was a bare `fetch(url, init)` that could hang
- *  for as long as the remote router took to answer, and nothing upstream could interrupt it: the retry
- *  loop's `deadlineMs` checks run only BETWEEN retries, and `omni_deadline_ms` is advisory — it asks the
- *  remote router to bound ITSELF, which is worthless precisely when that router is the thing wedged. The
- *  in-process branch was always bounded (routeInference's SAFETY_CEILING_MS); the HTTP branch was not.
- *
- *  The consequence is a 502 that looks like the app's fault and is not: the fetch outlives Val Town's
- *  ~60s kill, the isolate dies without writing a response, and Cloudflare reports "Bad gateway" with the
- *  HOST marked as the error source. That is unrecoverable by design — a killed isolate cannot report
- *  anything — so the only fix is to never reach the kill. Abort first and surface a real error instead. */
-/** What this loop spends around a router call that the router's own clock never sees: serializing the
- *  body, the request, and reading the response back. Reserved on both sides of every budget decision. */
+/** This app's own public URL. The router is a MODULE of this app now, so this is
+ *  not where inference goes — it is what an external client (omni-client.ts, an
+ *  OpenAI SDK) should point at, and what error messages name. Override with
+ *  OMNI_URL when the val is served from a custom domain. */
+export const SELF_URL = (env("OMNI_URL") || "https://free-ai.val.run").replace(/\/+$/, "");
+/** Kept as an alias: settings, docs and old saved configurations all say
+ *  "router url", and blank means "the one built into this app". */
+export const INFERENCE_URL = SELF_URL;
+
+/** What this loop spends around a router call that the router's own clock never
+ *  sees: serializing the body, the request, and reading the response back.
+ *  Reserved on both sides of every budget decision. */
 const TRANSPORT_MARGIN_MS = T.transportMargin;
-export const routerCall = (
-  url: string,
-  init: RequestInit,
-  timeoutMs?: number,
-): Promise<Response> => {
-  if (url.replace(/\/$/, "") === INFERENCE_URL || !url) {
-    return routerHandler(
-      new Request(INFERENCE_URL + "/v1/chat/completions", init),
-    );
-  }
-  if (!timeoutMs || timeoutMs <= 0) return fetch(url, init);
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
-  return fetch(url, { ...init, signal: ac.signal })
-    .catch((e) => {
-      if (ac.signal.aborted) {
-        throw Object.assign(
-          new Error(
-            `ROUTER_TIMEOUT: ${url} did not answer within ${
-              Math.round(timeoutMs / 1000)
-            }s`,
-          ),
-          { status: 504, retryable: true },
-        );
-      }
-      throw e;
-    })
-    .finally(() => clearTimeout(timer));
+
+export type RouterReply = {
+  status: number;
+  json: any;
+  /** Raw body text. In-process this is the same object re-serialised, so the
+   *  HTML/WAF check below can only ever fire on the external branch — which is
+   *  the only branch where an edge can answer instead of the router. */
+  text: string;
+  header: (name: string) => string | null;
+  /** False when the answer came from a router this app does not control. */
+  inProcess: boolean;
 };
+
+/** Call the router — IN PROCESS, as a function, unless `url` points at a
+ *  different router the operator configured.
+ *
+ *  This used to synthesise a `Request`, hand it to the router val's HTTP handler,
+ *  and read the `Response` back: a loopback hop through withBoundary's second
+ *  deadline timer, a second initDB(), a CORS header nobody would read, a
+ *  JSON.stringify of the whole prompt and a JSON.parse of the whole reply — on
+ *  every single model call the app makes. Both the serialize and the parse are
+ *  gone now, and so is the second deadline competing with the first.
+ *
+ *  The EXTERNAL branch still has to be a fetch, and it MUST carry a timeout.
+ *  Without one it hangs for as long as the remote router takes, and nothing
+ *  upstream can interrupt it: the retry loop's `deadlineMs` checks run only
+ *  BETWEEN retries, and `omni_deadline_ms` is advisory — it asks the remote
+ *  router to bound ITSELF, which is worthless precisely when that router is the
+ *  thing wedged. The consequence is a 502 that looks like the app's fault and is
+ *  not: the fetch outlives Val Town's ~60 s kill, the isolate dies without
+ *  writing a response, and Cloudflare reports "Bad gateway" with the HOST marked
+ *  as the error source. Unrecoverable by design — a killed isolate cannot report
+ *  anything — so the only fix is never to reach the kill. */
+export async function routerRequest(url: string, body: Record<string, unknown>, timeoutMs?: number): Promise<RouterReply> {
+  const target = (url || "").replace(/\/+$/, "");
+  // Blank, our own origin, or our own origin + /v1 all mean "the built-in
+  // router". Anything else is an operator-configured remote and goes over HTTP.
+  if (!target || target === SELF_URL || target === `${SELF_URL}/v1`) {
+    const r = await chatCompletions(body);
+    return { status: r.status, json: r.json, text: JSON.stringify(r.json), header: () => null, inProcess: true };
+  }
+  const endpoint = /\/(v1\/)?chat\/completions$/.test(target) ? target : `${target}/v1/chat/completions`;
+  const ac = new AbortController();
+  const timer = timeoutMs && timeoutMs > 0 ? setTimeout(() => ac.abort(), timeoutMs) : undefined;
+  try {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    // The key travels as a header, never in the body: a body is what gets logged.
+    const { omni_auth: auth, ...rest } = body;
+    if (typeof auth === "string" && auth) headers.authorization = `Bearer ${auth}`;
+    const res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(rest), signal: ac.signal });
+    const text = await res.text();
+    let json: any = null;
+    try { json = JSON.parse(text); } catch { /* an edge page, not the router */ }
+    return { status: res.status, json, text, header: (n) => res.headers.get(n), inProcess: false };
+  } catch (e: any) {
+    if (ac.signal.aborted) {
+      throw Object.assign(
+        new Error(`ROUTER_TIMEOUT: ${endpoint} did not answer within ${Math.round((timeoutMs ?? 0) / 1000)}s`),
+        { status: 504, retryable: true },
+      );
+    }
+    throw Object.assign(new Error(`ROUTER_UNREACHABLE: ${endpoint} — ${String(e?.message ?? e).slice(0, 200)}`), { status: 502, retryable: true });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 //  INFERENCE  (accepts optional model override for the verifier pass)
@@ -73,22 +105,28 @@ export interface InferResult {
     finishReason?: string;
     tokensOut?: number | null;
     tokensIn?: number | null;
-    // Routing flowchart material, straight from router-core.ts's trail (via router-openai.ts's _omni_meta) —
-    // plan is the intended provider order, attempts is what actually happened (tried/skipped, ok/failed, timing).
+    // Routing flowchart material, straight from router.ts's trail (via its _omni_meta) —
+    // plan is the ranked provider order, attempts is what actually happened (tried/skipped,
+    // ok/failed, which model id, timing), and skipped is what the router refused to call at all.
     plan?: string[];
     attempts?: {
       provider: string;
       vendor: string;
       model: string;
+      /** 1 = the vendor's first model id, 2+ = a fallback within the same vendor. */
       pass: number;
       timeoutMs: number;
       ok: boolean;
       skipped?: boolean;
-      demoted?: boolean;
       latencyMs?: number;
+      /** Parameters a 400 accused, which the retry then dropped. */
+      dropped?: string[];
       error?: string;
       ts: number;
     }[];
+    /** Candidates never called, with the reason: too small for the prompt,
+     *  malformed secret, excluded, or every model id dead upstream. */
+    skipped?: { name: string; vendor: string; why: string }[] | null;
   };
 }
 export interface GenOpts {
@@ -139,11 +177,13 @@ export async function callInference(
     max_tokens: maxTokens,
     omni_expect_tokens: expect,
   };
-  const routerUrl = gen.router?.url ?? INFERENCE_URL;
-  const routerHeaders: Record<string, string> = {
-    "content-type": "application/json",
-    ...(gen.router?.key ? { authorization: `Bearer ${gen.router.key}` } : {}),
-  };
+  // Blank means the router built into this app, called as a function. A URL means
+  // an operator pointed this deployment at a different router, which is the only
+  // case that still needs HTTP — and the only case that needs an auth header,
+  // since the in-process call cannot be gated by OMNI_CLIENT_KEYS (nor should it
+  // be: it is the app talking to itself).
+  const routerUrl = gen.router?.url ?? "";
+  if (gen.router?.key) body.omni_auth = gen.router.key;
   if (deadlineMs) {
     body.omni_deadline_ms = deadlineMs;
     // The duration is re-based when it lands — after DNS, TLS and transport — so the router's budget
@@ -167,24 +207,22 @@ export async function callInference(
   for (let retry = 0; retry < 4; retry++) {
     if (retry) {
       // Prompt-size exhaustion: the vendors that are left cannot take this prompt, so make the prompt fit —
-      // drop oldest history, trim tool payloads — and try again at once instead of burning retries on an
+      // drop oldest history, trim tool payloads — and retry AT ONCE instead of burning retries on an
       // identical, unwinnable resend.
       //
-      // This regex previously looked for "prompt ≈N tok > maxIn" / "too large" / "input limit" / "maxIn" —
-      // a message format router-core.ts and router-openai.ts never actually produce anywhere (confirmed:
-      // no occurrence of any of those substrings in either file). ALL_PROVIDERS_EXHAUSTED just concatenates
-      // each provider's own raw upstream error text (router-core.ts's `errors.push(`${p.name}: ${e.message}`)`),
-      // so the old regex could never match and shrinkMessages() below had exactly one call site — this whole
-      // branch was dead code; every size-exhausted request instead fell through to the generic retry path and
-      // resent the identical oversized prompt up to 4 times, guaranteed to fail identically each time, burning
-      // the wall-clock budget until the loop's own deadline check gave up. Replaced with patterns actually
-      // observed live this session (a real Groq 413: "Request too large ... please reduce your message size
-      // and try again") plus the standard phrasings other vendors use for the same failure.
-      //const sizeBound = /reduce (?:your|the) (?:message|prompt) size|request too large|prompt is too long|too many tokens|context_length_exceeded|maximum context length|exceeds the (?:model'?s? )?(?:context|token) (?:length|limit)|input (?:is )?too long/i.test(lastErr.message) && (lastErr as any).status === 503;
-      const sizeBound =
-        /reduce (?:your|the) (?:message|prompt) size|request too large|prompt is too long|too many tokens|context_length_exceeded|maximum context length|exceeds the (?:model'?s? )?(?:context|token) (?:length|limit)|input (?:is )?too long/i
-          .test(lastErr.message) &&
-        [400, 413, 422, 503].includes((lastErr as any).status);
+      // Two signals, and the first is the one that matters. router.ts now refuses to call a vendor whose
+      // declared (or learned) input ceiling the prompt exceeds, and says so with its own code — a
+      // structured 413 PROMPT_TOO_LARGE. That replaces a regex guess over upstream prose, which is all
+      // this branch used to have: the router never produced a size message of its own, so for one whole
+      // revision the regex could not match anything, shrinkMessages() had no live call site, and every
+      // oversized request resent itself four times identically until the wall clock ran out. The regex
+      // stays as the second signal because a remote operator-configured router — or one vendor's own 413
+      // inside a 503 exhaustion — still arrives as prose.
+      const errAny = lastErr as any;
+      const sizeBound = errAny.code === "PROMPT_TOO_LARGE" || errAny.status === 413 ||
+        (/reduce (?:your|the) (?:message|prompt) size|request too large|prompt is too long|too many tokens|context_length_exceeded|maximum context length|exceeds the (?:model'?s? )?(?:context|token) (?:length|limit)|input (?:is )?too long|exceeds its \d+ tok input limit/i
+            .test(lastErr.message) &&
+          [400, 413, 422, 503].includes(errAny.status));
       if (sizeBound && shrinks < 2) {
         shrinks++;
         body.messages = shrinkMessages(body.messages as any[], shrinks);
@@ -193,7 +231,7 @@ export async function callInference(
       const wait = sizeBound ? 0 : 1200 * retry;
       // A client-side retry is another complete routed request, not another provider fallback within the
       // current one. Start it only if the remaining grant can cover one minimum provider attempt plus the
-      // serialization/request/response margin; router-core.ts separately reserves room for fallback
+      // serialization/request/response margin; router.ts separately reserves room for fallback
       // candidates inside each request.
       if (
         deadlineMs &&
@@ -236,60 +274,61 @@ export async function callInference(
           deadlineMs - (Date.now() - t0) - TRANSPORT_MARGIN_MS,
         )
         : 0;
-      const res = await routerCall(routerUrl, {
-        method: "POST",
-        headers: routerHeaders,
-        body: JSON.stringify(body),
-      }, leftMs);
-      const text = await res.text();
-      let json: any = null;
-      try {
-        json = JSON.parse(text);
-      } catch { /* non-JSON */ }
-      if (!res.ok || !json?.choices?.[0]) {
-        // An HTML body is an edge/WAF page (Val Town "Blocked", Cloudflare challenge), not the router: report its title + who served it, never the markup.
+      const res = await routerRequest(routerUrl, body, leftMs);
+      const { text, json, status } = res;
+      if (status < 200 || status > 299 || !json?.choices?.[0]) {
+        // An HTML body is an edge/WAF page (Val Town "Blocked", a Cloudflare challenge), not the router:
+        // report its title and who served it, never the markup. Only reachable on the external branch —
+        // an in-process call has no edge in front of it.
         const html = /^\s*<(?:!doctype|html)/i.test(text);
-        const detail = json?.error
-          ? (typeof json.error === "string"
-            ? json.error
-            : `${json.error.message}${
-              json.error.details
-                ? "\n" + [].concat(json.error.details).join("\n")
-                : ""
-            }`)
+        const errObj = json?.error;
+        const detail = errObj
+          ? (typeof errObj === "string"
+            ? errObj
+            : `${errObj.message}${
+              errObj.details ? "\n" + [].concat(errObj.details).join("\n") : ""
+            }${errObj.skipped?.length ? "\nskipped without a call: " + errObj.skipped.map((s: any) => `${s.name} (${s.why})`).join("; ") : ""}`)
           : html
-          ? `${routerUrl} answered with an HTML page "${
-            (text.match(/<title>([^<]{1,80})<\/title>/i)?.[1] ?? "no title")
-              .trim()
-          }" (server: ${res.headers.get("server") ?? "?"}, cf-ray: ${
-            res.headers.get("cf-ray") ?? "-"
-          }) — the request was blocked before reaching the router; check https://router.val.run/health in a browser and the val's logs`
+          ? `${routerUrl || SELF_URL} answered with an HTML page "${
+            (text.match(/<title>([^<]{1,80})<\/title>/i)?.[1] ?? "no title").trim()
+          }" (server: ${res.header("server") ?? "?"}, cf-ray: ${
+            res.header("cf-ray") ?? "-"
+          }) — the request was blocked before reaching the router; open ${SELF_URL}/health in a browser and check the val's logs`
           : text.slice(0, 600);
-        if (json?.error?.plan) lastPlan = json.error.plan;
-        if (json?.error?.attempts) lastAttempts = json.error.attempts;
-        lastErr = Object.assign(new Error(`router ${res.status}: ${detail}`), {
-          status: res.status,
+        if (errObj?.plan) lastPlan = errObj.plan;
+        if (errObj?.attempts) lastAttempts = errObj.attempts;
+        lastErr = Object.assign(new Error(`router ${status}: ${detail}`), {
+          status,
+          code: errObj?.code ?? null,
           html,
           plan: lastPlan,
           attempts: lastAttempts,
+          skipped: errObj?.skipped ?? null,
         });
-        if (res.status === 404 || res.status === 400 || res.status === 401) {
-          throw lastErr; // not retryable
+        // 404 = the caller named a model that does not exist; 400 = the request
+        // itself is malformed; 401 = a gate. None of these change by retrying, and
+        // retrying them is how a 14 s turn burns itself on one immutable answer.
+        // 413 (PROMPT_TOO_LARGE) deliberately DOES fall through to the retry path:
+        // the shrink branch below turns it into a different, smaller request.
+        if (status === 404 || status === 400 || status === 401) {
+          throw lastErr;
         }
         continue;
       }
       const choice = json.choices[0];
       const m = choice.message ?? {};
-      // Defense in depth: router-core.ts already rejects an empty/all-dot response before it can win a
-      // provider race (see EMPTY_OR_DOT_RESPONSE there), but gen.router.url can point at a different,
-      // custom router the user configured — this is the last checkpoint before an empty/junk reply would
-      // otherwise be accepted as done. Treated exactly like a 503: retried, not silently returned.
+      // Defense in depth: router.ts already rejects an empty/all-dot response before it can win a
+      // provider race (see isEmptyOrDotContent there), but gen.router.url can point at a different,
+      // custom router the operator configured — this is the last checkpoint before an empty/junk reply
+      // would otherwise be accepted as done. Treated exactly like a 503: retried, not silently returned.
+      // A reasoning-only reply is NOT empty: it is truncated, and the caller's auto-continue handles it.
       const omni = json._omni_meta;
       if (omni?.plan) lastPlan = omni.plan;
       if (omni?.attempts) lastAttempts = omni.attempts;
-      const hasToolCalls = Array.isArray(m.tool_calls) &&
-        m.tool_calls.length > 0;
-      if (!hasToolCalls && typeof m.content === "string") {
+      const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+      const thought = (typeof m.reasoning === "string" && m.reasoning.trim()) ||
+        (typeof m.reasoning_content === "string" && m.reasoning_content.trim());
+      if (!hasToolCalls && !thought && typeof m.content === "string") {
         const stripped = m.content.replace(/\s+/g, "");
         if (stripped.length === 0 || /^\.+$/.test(stripped)) {
           lastErr = Object.assign(
@@ -325,11 +364,18 @@ export async function callInference(
           tokensIn: json.usage?.prompt_tokens ?? null,
           plan: lastPlan,
           attempts: lastAttempts,
+          // Providers the router refused to even call, with the reason. Surfacing
+          // this is the difference between "the router is broken" and "your prompt
+          // is 9k tokens and the widest vendor takes 6.5k" — which is a thing the
+          // caller can fix and previously could not see.
+          skipped: omni?.skipped ?? null,
         },
       };
     } catch (e: any) {
       lastErr = e;
-      if (e.status && ![503, 502, 500, 429].includes(e.status)) throw e;
+      // 413 is PROMPT_TOO_LARGE: the shrink branch above turns the next attempt
+      // into a different, smaller request, so it is retryable by construction.
+      if (e.status && ![503, 502, 500, 429, 413].includes(e.status)) throw e;
     }
   }
   throw lastErr;

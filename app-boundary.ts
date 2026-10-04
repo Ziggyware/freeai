@@ -1,4 +1,5 @@
-// The HTTP boundary, shared by both entrypoints (app.tsx and router.tsx).
+// The HTTP boundary for the app. There is one entrypoint now: router.tsx is gone
+// and the router's routes are mounted inside app.tsx's handler.
 //
 // WHY THIS IS ITS OWN FILE, and why it matters more than it looks:
 //
