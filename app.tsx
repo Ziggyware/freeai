@@ -6,7 +6,8 @@ import { clearSession, deleteSession, renameSession, type Tool, type ToolCtx, TO
 import { activeSkills, type Focus, normalizeSettings, type Settings, type Skill } from "./app-settings.ts";
 import { handleSwarm } from "./app-swarm.ts";
 import { clientStatusFor, installRejectionBackstop, RESPONSE_DEADLINE_MS, withBoundary } from "./app-boundary.ts";
-import { maybeScheduleBuild, wireBuild } from "./app-build-wire.ts";
+import { maybeScheduleBuild, wireTurn } from "./app-build-wire.ts";
+import { clean, ensureSession, installHandlers } from "./app-boot.ts";
 import { handleIssues, ISSUE_TOOLS } from "./issues.ts";
 import { BUILD_RX, callInference, type GenOpts, type InferResult } from "./app-infer.ts";
 import { compactMessage, handleCompact, liveChars, loadCompact } from "./app-compact.ts";
@@ -27,7 +28,6 @@ import {
   type Row,
   run,
   sql,
-  touchSession,
   unwrap,
 } from "./db.ts";
 
@@ -61,9 +61,6 @@ function rateLimit(k: string, ms = 900): boolean {
   recent.set(k, now);
   return true;
 }
-function clean(s: string): string {
-  return s.replace(/\u0000/g, "").trim().slice(0, 64_000);
-}
 async function safeJson(res: Response) {
   const ct = res.headers.get("content-type") || "";
   const body = await res.text(); // read once, as text
@@ -82,17 +79,6 @@ async function safeJson(res: Response) {
 // ════════════════════════════════════════════════════════════════════════════
 //  LEGACY BLOB MEMORY (kept for backward compat; no longer the ratchet path)
 // ════════════════════════════════════════════════════════════════════════════
-async function ensureSession(id: string): Promise<Row<"session">> {
-  const existing = unwrap(
-    await one("session", sql`SELECT * FROM session WHERE id = ${id}`),
-    null,
-  );
-  if (existing) return existing;
-  const row: Row<"session"> = { id, name: "New Chat", ts: Date.now() };
-  await touchSession(row.id, row.name, row.ts);
-  return row;
-}
-
 async function listSessions(): Promise<Row<"session">[]> {
   return unwrap(
     await all("session", sql`SELECT * FROM session ORDER BY ts DESC LIMIT 50`),
@@ -748,8 +734,14 @@ export { APP_OWNED_STATUSES, clientStatusFor } from "./app-boundary.ts";
  *  the error path, so a polling UI has a terminal event instead of polling forever. */
 async function runTurn(q: string, session: string, settings: Settings, model: string | null): Promise<Response> {
   if (!q.trim()) return Response.json({ error: { message: "empty prompt" } }, { status: 400 });
+  // A FIX ASK IS OFFERED TO THE INLINE TOOLS FIRST. `wireTurn` recognises a one-file repair, hands the
+  // turn's workbench context the artifact and the reported error, and keeps an `after` hook that escalates
+  // to the durable repair job when the inline attempt changes nothing. A structural repair (several files,
+  // "fix everything") passes straight through to the scheduler, which is what this ordering preserves.
+  const wire = await wireTurn(q, session, settings, { PassMeter, deriveTitle, clean, ensureSession, addMsg }).catch(() => null);
+  const turnSettings = (wire?.settings ?? settings) as Settings;
   // A multi-file build becomes a step graph, not a 14-pass loop inside this one invocation.
-  const scheduled = await maybeScheduleBuild(q, session, settings, { PassMeter, deriveTitle, clean, ensureSession, addMsg });
+  const scheduled = await maybeScheduleBuild(q, session, turnSettings, { PassMeter, deriveTitle, clean, ensureSession, addMsg });
   if (scheduled) return Response.json(scheduled);
   const log: Progress[] = [];
   let chain = Promise.resolve();
@@ -760,9 +752,12 @@ async function runTurn(q: string, session: string, settings: Settings, model: st
   const emit = (p: Progress) => { log.push(p); persist(); };
   emit({ type: "stage", label: "starting" });
   try {
-    const r = await runAI(q, session, emit, model, settings);
+    const r = await runAI(q, session, emit, model, turnSettings);
     await chain;
-    return Response.json(r);
+    // Did the inline fix land? If not, `after` starts the repair job and returns `scheduled`, which is what
+    // makes the client begin driving the queue in this same turn instead of waiting to be asked again.
+    const escalated = wire ? await wire.after(r).catch(() => null) : null;
+    return Response.json(escalated ? { ...r, ...escalated } : r);
   } catch (err: any) {
     console.error("turn failed:", q.slice(0, 80), err);
     const msg = String(err?.message ?? err);
@@ -984,7 +979,9 @@ async function handleRequest(req: Request): Promise<Response> {
     if (!r) return Response.json({ error: "not found" }, { status: 404 });
     return Response.json({ id: r.artifact.id, title: r.artifact.title, kind: r.artifact.kind, session: r.artifact.session, files: r.files, issues: lintArtifact(r.files) });
   }
-  wireBuild({ PassMeter, deriveTitle, clean, ensureSession });
+  // Registered once per isolate, and NOT only here: the cron val imports the same bootstrap
+  // (app-boot.ts) so a job left running with no tab open still has handlers to run.
+  installHandlers();
   const swarm = await handleSwarm(req, url, { PassMeter, deriveTitle, clean, ensureSession });
   if (swarm) return swarm;
   const issuesRes = await handleIssues(req, url);

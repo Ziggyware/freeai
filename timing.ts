@@ -214,6 +214,9 @@ const STEP_TABLE = {
   // generating exactly when its lease lapses, at which point another isolate re-claims it and the same
   // file is built twice while the job reports no progress. That is a failure this system has had.
   design: 18_000, plan: 18_000, build: 18_000, integrate: 18_000,
+  // `repair` is a model call that returns small edits, so it is sized like a build; `goalcheck` is
+  // deterministic (a handful of reads and at most two enqueues) and only needs room to record its verdict.
+  repair: 18_000, goalcheck: 6_000,
   diagnose: 15_000, conform: 15_000, supervise: 12_000, verify: 12_000,
   retention: 8_000, verify_file: 6_000, report_blocked: 4_000, noop: 1_000,
 } as const;

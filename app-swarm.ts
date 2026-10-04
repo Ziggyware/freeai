@@ -3,12 +3,13 @@
 import { T } from "./timing.ts";
 import { renderPrompt } from "./prompts.ts";
 import { readJsonBody } from "./app-helpers.ts";
+import { applyEdits, fingerprint, parseModelJson, type Edit } from "./repair.ts";
 import { clientStatusFor } from "./app-boundary.ts";
-import { buildProgress, jobIdFor, jobTasks, startBuild } from "./app-build.ts";
+import { buildProgress, jobIdFor, jobTasks, startBuild, stopJob } from "./app-build.ts";
 import { tick } from "./scheduler.ts";
 import { drainOne, driveQueue, DRAIN_HEADER, FANOUT_WIDTH } from "./swarm-fanout.ts";
 import "./scheduler-tasks.ts"; // handler registration is a side effect and must happen before any tick()
-import { lintArtifact, listFiles, saveMany, stripModuleSyntax } from "./artifacts.ts";
+import { lintArtifact, listFiles, readFile, saveMany, stripModuleSyntax } from "./artifacts.ts";
 import { stripTypeScript } from "./heal.ts";
 import { buildReport, formatRepairBrief, type ErrorReport } from "./errors.ts";
 import { activeSkills, normalizeSettings } from "./app-settings.ts";
@@ -242,6 +243,96 @@ export async function buildFileOnce(session: string, id: number, manifest: any, 
       return { ok: true as const, path, chars: content.length, lines: content.split("\n").length, truncated, issues: own, written: w.written.length > 0, meta: r?.meta ?? null };
 }
 
+/** REPAIR one file: the smallest correct edit, plus the root cause, in one call.
+ *
+ *  Why this is not `buildFileOnce` with a different prompt. A builder is asked for a COMPLETE FILE from a
+ *  purpose line, which is the right operation when no file exists and the wrong one when a 200-line file
+ *  has one broken line: the model re-derives everything, and every re-derivation is a chance to change
+ *  something that was already correct. The reported run is what that looks like in practice — a "fix" that
+ *  rewrote render.js and left the constructor error in it.
+ *
+ *  So the contract here is an EDIT LIST over the file the user actually has: exact find→replace pairs
+ *  applied with update_artifact's semantics (each `find` must occur exactly once), a stated root cause,
+ *  and a full-file rewrite permitted only as an explicit fallback that says why. A round in which nothing
+ *  is applicable is reported as `changed: false` — never as a completed repair. */
+export type FileRepair = {
+  path: string; written: boolean; changed: boolean; chars: number; beforeChars: number;
+  rootCause: string; note: string; edits: number; failedEdits: string[]; noopReason?: string;
+  truncated: boolean; issues: string[];
+};
+
+export async function repairFileOnce(
+  session: string, id: number, manifest: any, path: string, rawSettings: any, d: SwarmDeps,
+  o: { goal?: string; findings?: string[]; directives?: string[]; current?: string; deadline?: number } = {},
+): Promise<FileRepair> {
+  const settings = normalizeSettings(rawSettings ?? {});
+  const { PassMeter } = d;
+  const spec = (manifest?.files ?? []).find((f: any) => f.path === path) ?? { path, purpose: "", exports: [], imports: [], notes: "" };
+  const before = o.current !== undefined ? String(o.current) : ((await readFile(id, path))?.content ?? "");
+  const siblings = (manifest?.files ?? []).map((f: any) => String(f.path)).filter((p: string) => p && p !== path);
+  const meter = new PassMeter(4, () => {}, settings.model, settings, o.deadline ?? null);
+  const prompt = meter.p("repair", {
+    ask: String(manifest?.ask ?? "").slice(0, 3000),
+    path,
+    title: String(manifest?.title ?? ""),
+    purpose: String(spec.purpose ?? "").slice(0, 400),
+    goal: String(o.goal ?? "").slice(0, 600) || String(manifest?.ask ?? "").slice(0, 400),
+    findings: (o.findings ?? []).length ? o.findings.map((x) => "- " + String(x).slice(0, 300)).join("\n") : "(none recorded — the reported failure is the brief)",
+    files: siblings.join(", ") || "(none)",
+    current: before.slice(0, 16_000),
+    user: settings.system ? `\nUser instructions: ${settings.system}\n` : "",
+  });
+  const extra = (o.directives ?? []).length ? "\n\nSUPERVISOR DIRECTIVES (apply all):\n" + (o.directives ?? []).map((x) => "- " + x).join("\n") : "";
+  const r = await meter.call(
+    [{ role: "system", content: "You repair one file with the smallest correct edit, and name the root cause. Output only the JSON object described." }, { role: "user", content: prompt + extra }],
+    undefined, settings.model ?? "coder", { expect: 1200, maxTokens: 3000, temperature: 0.1 },
+  );
+  const raw = String(r?.message?.content ?? "");
+  const parsed = parseModelJson(raw);
+  if (!parsed) throw Object.assign(new Error(`the repair model did not return the edit JSON for ${path}: ${raw.slice(0, 140)}`), { status: 503, retryable: true });
+  const rootCause = String(parsed.rootCause ?? "").trim().slice(0, 600);
+  const note = String(parsed.note ?? "").trim().slice(0, 300);
+  const edits: Edit[] = (Array.isArray(parsed.edits) ? parsed.edits : [])
+    .filter((e: any) => e && typeof e.find === "string" && typeof e.replace === "string")
+    .slice(0, 12)
+    .map((e: any) => ({ find: String(e.find), replace: String(e.replace) }));
+  const applied = applyEdits(before, edits);
+  let content = applied.applied > 0 ? applied.content : "";
+  let mode: "edits" | "rewrite" = "edits";
+  if (!content && typeof parsed.content === "string" && parsed.content.trim().length >= 20) { content = parsed.content; mode = "rewrite"; }
+  const truncated = r?.finishReason === "length";
+
+  // NOTHING APPLICABLE. This is a failed repair, and it says so: the caller records `changed: false`, the
+  // round is judged unresolved, and the next round gets different instructions. Reporting a completed
+  // step that changed nothing is the exact failure this file exists to end.
+  if (!content) {
+    const noopReason = applied.failed.length ? applied.failed.join("; ") : (edits.length ? "no edit applied" : "the model returned no edits and no replacement content");
+    return { path, written: false, changed: false, chars: before.length, beforeChars: before.length, rootCause, note, edits: edits.length, failedEdits: applied.failed, noopReason, truncated, issues: [] };
+  }
+  // A REWRITE MUST NOT TRUNCATE THE FILE. Free tiers cut mid-output; a 900-char stub replacing a
+  // 6,000-char file reads as a successful write everywhere downstream.
+  if (mode === "rewrite" && before.length > 400 && content.length < before.length * 0.3) {
+    throw Object.assign(new Error(`the repair returned a rewrite of ${path} that is ${content.length} chars against the original ${before.length} — that is a truncation, not a fix. Re-send the complete file, or express the change as edits.`), { status: 503, retryable: true });
+  }
+  if (/\.m?js$/i.test(path)) {
+    const parses = (s: string) => { try { new Function(stripModuleSyntax(s)); return true; } catch { return false; } };
+    if (!parses(content)) { const stripped = stripTypeScript(content); if (stripped !== content && parses(stripped)) content = stripped; }
+  }
+  const changed = fingerprint(content) !== fingerprint(before);
+  if (!changed) {
+    return { path, written: false, changed: false, chars: content.length, beforeChars: before.length, rootCause, note, edits: applied.applied, failedEdits: applied.failed, noopReason: "the repair produced byte-identical content", truncated, issues: [] };
+  }
+  const w = await saveMany(session, id, "", [{ path, content }]);
+  if (!w || !w.written.length) throw Object.assign(new Error(`${path} was repaired (${content.length} chars) but the write did not land`), { status: 503, retryable: true });
+  const own = lintArtifact([{ path, content }]).filter((i) => !/does not exist|imports \{/.test(i));
+  await ensureBuildJob(id, session, manifest, String(manifest?.ask ?? ""));
+  const bf = await run(sql`INSERT INTO build_file (artifact_id, path, purpose, status, lines, issues, error, attempts, updated_ts)
+    VALUES (${id}, ${path}, ${String(spec.purpose ?? "").slice(0, 500)}, ${truncated || own.length ? "issues" : "ok"}, ${content.split("\n").length}, ${JSON.stringify(own).slice(0, 4000)}, NULL, 1, ${Date.now()})
+    ON CONFLICT(artifact_id, path) DO UPDATE SET status = excluded.status, lines = excluded.lines, issues = excluded.issues, error = NULL, attempts = build_file.attempts + 1, updated_ts = excluded.updated_ts`);
+  if (!bf.ok) console.error(`[repair] build_file row for ${path} was not written:`, bf.error);
+  return { path, written: true, changed: true, chars: content.length, beforeChars: before.length, rootCause, note, edits: applied.applied, failedEdits: applied.failed, truncated, issues: own };
+}
+
 /** Returns a Response for ?plan / ?build_file, or null when the request is not a swarm route. */
 export async function handleSwarm(req: Request, url: URL, d: SwarmDeps): Promise<Response | null> {
   const method = req.method;
@@ -348,6 +439,24 @@ export async function handleSwarm(req: Request, url: URL, d: SwarmDeps): Promise
   if (url.searchParams.has("drain")) {
     if (method !== "POST") return Response.json({ error: { message: "POST only" } }, { status: 405 });
     return Response.json(await drainOne());
+  }
+
+  // POST ?build_cancel {job} -> stop a job for real.
+  //
+  // The client's stop button used to flip a flag on the polling loop, which stopped the POLLING and
+  // nothing else: the steps stayed queued and the interval val kept executing them, so "stop" meant
+  // "stop watching", and a repair the user had stopped kept spending and kept writing. This marks every
+  // unstarted step terminal and records the stop on the job, so the queue's own state says stopped too.
+  if (method === "POST" && url.searchParams.has("build_cancel")) {
+    let job = String(url.searchParams.get("job") ?? "");
+    let reason = "stopped by the user";
+    if (!job) {
+      const b = await readJsonBody(req).catch(() => ({}) as any);
+      job = String(b?.job ?? "");
+      if (typeof b?.reason === "string" && b.reason.trim()) reason = b.reason.trim().slice(0, 200);
+    }
+    if (!job) return Response.json({ error: { message: "job required" } }, { status: 400 });
+    return Response.json({ cancelled: true, ...(await stopJob(job, reason)) });
   }
 
   if (method === "POST" && url.searchParams.has("build_start")) {

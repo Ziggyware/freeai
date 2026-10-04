@@ -12,6 +12,7 @@ import { T } from "./timing.ts";
 import { initDB, sql, run, one } from "./db.ts";
 import { nextRunAt, tick, enqueue, jobStatus } from "./scheduler.ts";
 import { migrateProbeSteps } from "./scheduler-tasks.ts"; // also registers handlers as a side effect — must be imported before tick()
+import { installHandlers } from "./app-boot.ts";        // build/repair kinds too: a cron isolate must be able to run them
 
 const TICK_BUDGET_MS = T.cronTick;
 const MAINT_JOB = "maintenance";
@@ -36,6 +37,10 @@ async function ensureMaintenance(): Promise<boolean> {
 
 export default async function (interval: { lastRunAt?: Date }) {
   await initDB();
+  // A job left running by a closed tab reaches THIS isolate, where the generic handlers exist but the
+  // build/repair kinds are registered by app-build.ts through the wire. Without this line every
+  // design/plan/build/verify/goalcheck step failed here with "no handler registered for kind".
+  installHandlers();
   await migrateProbeSteps().catch(() => 0); // retire rows from before the probe handler was removed
   const queued = await ensureMaintenance();
   const report = await tick(TICK_BUDGET_MS);

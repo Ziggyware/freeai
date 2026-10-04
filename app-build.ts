@@ -30,6 +30,7 @@ import { lintArtifact, listFiles, missingRefs } from "./artifacts.ts";
 import { healAndSave, issuePath } from "./heal.ts";
 import { PLACEHOLDER_MARK } from "./app-swarm.ts";
 import { diffPlans, jobStepBudget, planOrder, taskDurations, taskGraph, type TaskRow, validatePlan } from "./plan.ts";
+import { MAX_REPAIR_ROUNDS, fingerprint, localImports, parseRepairAsk, pickRepairTargets, repairGoal, type RepairPick } from "./repair.ts";
 
 export const jobIdFor = (session: string, artifactId: number | string) => `build:${session}:${artifactId}`;
 /** A build's own id, derived from the ASK.
@@ -117,6 +118,14 @@ export type BuildDeps = {
   plan: (job: string, st: any, deadline: number) => Promise<{ manifest: any; artifactId: number }>;
   buildFile: (job: string, st: any, path: string, directives: string[], deadline: number) => Promise<{ issues: string[]; truncated: boolean }>;
   integrate: (job: string, st: any, issues: string[], deadline: number) => Promise<unknown>;
+  /** REPAIR one file: the smallest correct edit plus the root cause, never a fresh rewrite.
+   *
+   *  Separate from buildFile because they are different operations with different acceptance tests. A
+   *  builder is handed a purpose line and asked for a complete file; a repairer is handed the file, the
+   *  defect and the reported failure, and asked for the minimal edit that removes the defect. Routing a
+   *  fix through the builder is how "apply the smallest correct fix" became a wholesale rewrite that
+   *  left the bug in place. */
+  repairFile: (job: string, st: any, path: string, deadline: number) => Promise<{ issues: string[]; truncated: boolean; changed: boolean; rootCause: string }>;
 };
 
 /** Start a build. Returns the job id; nothing runs yet — the next tick drains it. */
@@ -163,22 +172,47 @@ export async function startBuild(session: string, ask: string, settings: any = {
 export async function startRepair(session: string, artifactId: number, ask: string, settings: any = {}): Promise<string> {
   const job = jobIdFor(session, artifactId);
   const existing = await jobStatus(job);
+  // A job that is already running is JOINED, not restarted: re-enqueuing the same repair while the first
+  // attempt is in flight would run every step twice against the same files.
   if (existing.pending > 0) return job;
   const prior = await getJobState(job);
   // Keep a design document from an earlier build of THIS artifact: the files being repaired were written
   // against it, and a repair that ignores it reinterprets the domain.
   const ids: number[] = [];
+  const ask0 = String(ask).slice(0, 4000);
+  // A new ask un-stops the job even when an earlier run of it was stopped by hand: this turn IS the user
+  // asking for it. (The stop flag only ever suppresses FUTURE rounds; it never resurrects them.)
+  const stopped = false;
   const put = (extra: unknown) => putJobState(job, { ...(prior ?? {}), session, artifactId, ask, settings, repair: extra });
-  await put({ errors: String(ask).slice(0, 4000), startedAt: Date.now(), hadPrior: !!prior, stepIds: ids });
+  // ROUNDS AND OUTCOME ARE PART OF THE REPAIR, not derived later. `round` is which attempt this is,
+  // `maxRounds` the ceiling, `resolved` the acceptance test's verdict and `stopped` the user's. Without
+  // them the only terminal state a repair could reach was "the queue drained", which is exactly what the
+  // reported run reported while the bug was still in the file.
+  const startedAt = Date.now();
+  await put({ errors: ask0, startedAt, hadPrior: !!prior, stepIds: ids, round: 0, maxRounds: MAX_REPAIR_ROUNDS, stopped, resolved: false, rootCauses: {} });
+  // ONE IDENTITY PER REPAIR RUN. `job` is reused for every repair of the same artifact (that is deliberate:
+  // one progress card, one history), which means a round-scoped dedupe key like "repair-round:1" already
+  // exists from the PREVIOUS run - `enqueue` would answer with that completed step's id and the new repair
+  // would enqueue nothing and finish instantly. Every key the loop creates carries this run key, so a
+  // second repair is a second run, not a dedupe hit.
   const [diagId] = await enqueue(job, [{ kind: "diagnose", payload: { job }, seq: -5 }]);
+  const runKey = `${startedAt}:${diagId}`;
   const [supId] = await enqueue(job, [{ kind: "supervise", payload: { job }, seq: 90, needs: diagId, gate: "build", priority: 5 }]);
   const [intId] = await enqueue(job, [{ kind: "integrate", payload: { job }, seq: 95, needs: supId, gate: "build" }]);
   const [verId] = await enqueue(job, [{ kind: "verify", payload: { job }, seq: 99, needs: intId }]);
-  const [conId] = await enqueue(job, [{ kind: "conform", payload: { job }, seq: 100, needs: verId }]);
-  ids.push(diagId, supId, intId, verId, conId);
+  // The conformance step is NOT enqueued for a repair. It compares the artifact against the ask as if the
+  // ask were a build order — "fix render.js:27" is not a description of an app, so it reported a mismatch
+  // every time and did nothing with the verdict. A repair's acceptance test is whether the reported
+  // failure is gone, and `goalcheck` is that test: deterministic, re-run after every round, and the only
+  // thing allowed to declare the repair finished.
+  // DEDUPE, because verify enqueues a goalcheck for the same round once it has recorded the verdict. Two
+  // goalchecks for one round would advance the round counter twice and spend two rounds' budget on one
+  // attempt. The key is per (run, round), so the second enqueue returns the first step's id.
+  const [goalId] = await enqueue(job, [{ kind: "goalcheck", payload: { job, round: 0 }, seq: 99.5, needs: verId, priority: 3, dedupe: `goalcheck:${runKey}:0` }]);
+  ids.push(diagId, supId, intId, verId, goalId);
   // The ids are recorded so an abandoned repair can be un-done EXACTLY. This job id is shared with any
   // earlier build of the same artifact, so "delete this job's steps" would erase that build's history.
-  await put({ errors: String(ask).slice(0, 4000), startedAt: Date.now(), hadPrior: !!prior, stepIds: ids });
+  await put({ errors: ask0, startedAt, hadPrior: !!prior, stepIds: ids, firstStepId: diagId, runKey, round: 0, maxRounds: MAX_REPAIR_ROUNDS, stopped, resolved: false, rootCauses: {} });
   return job;
 }
 
@@ -217,47 +251,92 @@ export function registerBuildHandlers(deps: BuildDeps): void {
   // and buildProgress reports against the real artifact - the repair targets are the build steps.
   registerHandler("diagnose", {
     maxMs: stepMs("diagnose"),
-    run: async (p: { job: string }) => {
+    run: async (p: { job: string; round?: number }) => {
       const st = await getJobState(p.job);
       if (!st) throw new Error(`no job state for ${p.job}`);
       const id = Number(st.artifactId);
       const lf = Number.isInteger(id) && id > 0 ? await listFiles(id) : null;
       if (!lf) throw Object.assign(new Error(`artifact ${st.artifactId} has no files to repair`), { status: 400 });
       const ask = String(st.ask ?? "");
+      const repair = st.repair ?? {};
+      const round = Math.max(0, Number(p.round ?? repair.round ?? 0));
 
-      const findings: Record<string, string[]> = {};
+      // WHO DECIDES WHAT TO FIX: THE ASK, THEN THE LINT. The old version derived targets from the lint
+      // and merely *noted* files the ask happened to name (`ask.includes(f.path)`), so a report about
+      // `render.js:27` queued rebuilds of index.html and manifest.json and treated render.js as one
+      // target among three. The rules — and why each one exists — live in repair.ts.
+      const parsed = parseRepairAsk(ask, String(repair.focusFile ?? st.settings?.focus?.file ?? ""));
+      const missing = missingRefs(lf.files);
+      const pick: RepairPick = pickRepairTargets({ ask: parsed, askText: ask, known: lf.files.map((f) => f.path), lint: lintArtifact(lf.files), missing });
+      const goal = repairGoal(ask, pick);
+
+      // ROUND 2+ ONLY RE-TOUCHES WHAT IS STILL BROKEN. Re-repairing a file that the previous round
+      // already fixed is how a loop introduces the next regression.
+      const stillBroken: string[] = (repair.unresolved ?? []).map(String);
+      const todo = round > 0 && stillBroken.length ? pick.targets.filter((t) => stillBroken.includes(t)) : pick.targets;
+
+      const findings: Record<string, string[]> = { ...pick.findings };
       const note = (path: string, msg: string) => { (findings[path] ??= []).push(msg); };
-      for (const issue of lintArtifact(lf.files)) {
-        const m = /^([^\s:]+):\s*(.+)$/.exec(issue);
-        if (m && lf.files.some((f) => f.path === m[1])) note(m[1], m[2]);
+      // ROUND 2+ SAYS WHAT ROUND 1 GOT WRONG. Otherwise the next repair call is the same prompt the model
+      // already failed to act on — a retry, not a new attempt. The `why` comes from the deterministic
+      // verdict: missing, still-linting, or byte-identical after a round that claimed to fix it.
+      for (const [path, reason] of Object.entries<any>(repair.why ?? {})) {
+        if (todo.includes(path) && reason) note(path, `the previous repair round did not fix it: ${String(reason)}`);
       }
-      const absent = missingRefs(lf.files);
-      for (const a of absent) note(a.path, `this file does not exist but ${a.referrers.join(", ")} loads it — that is the 404; write the file`);
-      for (const f of lf.files) {
-        if (!isBuilt(f.content)) note(f.path, "the file is empty or still the plan-time placeholder — write its real contents");
-        else if (ask.includes(f.path)) note(f.path, "named in the reported errors");
-      }
-
-      const targets = Object.keys(findings);
       const known = new Set(lf.files.map((f) => f.path));
+      const byPath = new Map(lf.files.map((f) => [f.path, f.content]));
+      // Content identity at the START of this round: "did the round change anything" is answered by
+      // comparing against this, and it is the only available proof that a repair did work. (The reported
+      // runtime error is a browser observation this system cannot re-observe.)
+      // `roundStart` covers exactly the files this round ATTEMPTS. Covering every target instead would
+      // mark a file that was fixed in round 1 as "unchanged" in round 2 — it was not attempted again, so
+      // it cannot have changed — and the loop would never accept its own success.
+      const roundStart: Record<string, string> = {};
+      for (const t of todo) roundStart[t] = fingerprint(byPath.get(t) ?? "");
       const title = String(st.title ?? "") || "repair";
+      // The manifest is rebuilt from the files that exist, but the DEPENDENCY FACTS come from the plan that
+      // wrote them: `exports`/`imports` per path are what the repair prompt and the dependency brief read,
+      // and dropping them (this used to write empty arrays) is why a repair could not see the module its
+      // target imports.
+      const priorSpecs = new Map<string, any>(((st.manifest?.files ?? []) as any[]).map((f) => [String(f.path), f]));
       const manifest = {
         title,
         features: [],
-        files: [...lf.files.map((f) => f.path), ...absent.map((a) => a.path)].map((path) => ({
+        files: [...new Set([...lf.files.map((f) => f.path), ...pick.absent])].map((path) => ({
           path,
           purpose: known.has(path)
-            ? (findings[path] ? "EXISTING FILE — repair only what the findings name; keep everything else" : "existing file — already correct, not being rebuilt")
+            ? (pick.targets.includes(path) ? "EXISTING FILE — repair only what the findings name; keep everything else" : "existing file — already correct, not being rebuilt")
             : `MISSING FILE — referenced by the page but absent; write it`,
-          exports: [], imports: [], notes: (findings[path] ?? []).join("; "),
+          exports: priorSpecs.get(path)?.exports ?? [],
+          imports: (priorSpecs.get(path)?.imports ?? []).length ? priorSpecs.get(path)?.imports ?? [] : localImports(byPath.get(path) ?? "", [...known, ...pick.absent], path),
+          notes: (findings[path] ?? []).join("; "),
         })),
       };
-      await putJobState(p.job, { ...st, manifest, title, repair: { ...(st.repair ?? {}), findings, targets } });
-      if (!targets.length) return { targets: 0, note: "nothing structurally wrong was found in this artifact" };
-      await enqueue(p.job, targets.map((path, i) => ({
-        kind: "build", payload: { job: p.job, path }, seq: 10 + i, dedupe: `repair:${path}`,
+      await putJobState(p.job, {
+        ...st, manifest, title,
+        repair: {
+          ...repair, findings, targets: pick.targets, primary: pick.primary, untouched: pick.untouched,
+          absent: pick.absent, scopedToAsk: pick.scopedToAsk, goal, round, maxRounds: Number(repair.maxRounds ?? MAX_REPAIR_ROUNDS),
+          // `failed` is the UNION of every target that has ever come back unresolved. `unresolved` is reset at
+          // the start of each round (it describes the CURRENT verdict), so it cannot answer "how much of this
+          // repair is done" — and without that, progress reads "the file exists" (it always did) and never
+          // moves. This is what builtFiles counts for a repair.
+          failed: [...new Set([...(repair.failed ?? []), ...(repair.unresolved ?? [])].map(String))],
+          roundTargets: todo, roundStart, checkedAt: Date.now(), unresolved: [], resolved: false,
+        },
+      });
+      if (!todo.length) {
+        return { targets: 0, round, note: pick.targets.length ? "every target of this round was already repaired" : "nothing structurally wrong was found in this artifact" };
+      }
+      await enqueue(p.job, todo.map((path, i) => ({
+        kind: "build", payload: { job: p.job, path, repair: true }, seq: 10 + i,
+        // RUN-scoped AND round-scoped: the same file is repaired again in a later round (and the same
+        // round number exists in an earlier repair run of this artifact, because the job id is reused),
+        // so a key of just (round, path) would be a dedupe hit against a completed step from last time -
+        // the round would enqueue nothing and finish having done nothing.
+        dedupe: `repair:${repair.runKey ?? "0:0"}:${round}:${path}`,
       })));
-      return { targets: targets.length, files: targets, absent: absent.map((a) => a.path) };
+      return { targets: todo.length, round, files: todo, absent: pick.absent, goal };
     },
   });
 
@@ -341,10 +420,23 @@ export function registerBuildHandlers(deps: BuildDeps): void {
   // build — one file, independent of its siblings, so these are the steps that actually parallelise.
   registerHandler("build", {
     maxMs: stepMs("build"),
-    run: async (p: { job: string; path: string }, ctx) => {
+    run: async (p: { job: string; path: string; repair?: boolean }, ctx) => {
       const st = await getJobState(p.job);
       if (!st?.manifest) throw new Error("no manifest for job; plan must run first");
       const directives = await directivesFor(p.job); // the supervisor's accumulated instructions
+      // A repair target is EDITED, not rewritten: deps.repairFile returns find→replace edits applied with
+      // update_artifact's exact-once semantics, plus the root cause the user asked to be told.
+      if (p.repair || st.repair) {
+        const r = await deps.repairFile(p.job, st, p.path, ctx.deadline);
+        // The root cause is recorded on the JOB, not only in this step's result: the final report is
+        // assembled after the last round, long after this row's result would have to be re-queried and
+        // matched by payload.
+        const fresh = await getJobState(p.job);
+        if (fresh?.repair && r.rootCause) {
+          await putJobState(p.job, { ...fresh, repair: { ...fresh.repair, rootCauses: { ...(fresh.repair.rootCauses ?? {}), [p.path]: String(r.rootCause).slice(0, 600) } } });
+        }
+        return { path: p.path, issues: r.issues, truncated: r.truncated, changed: r.changed, rootCause: String(r.rootCause ?? "").slice(0, 600) };
+      }
       const r = await deps.buildFile(p.job, st, p.path, directives, ctx.deadline);
       return { path: p.path, issues: r.issues, truncated: r.truncated };
     },
@@ -379,7 +471,7 @@ export function registerBuildHandlers(deps: BuildDeps): void {
   // the model genuinely cannot produce must end as a visible failure, not an infinite rebuild.
   registerHandler("verify", {
     maxMs: stepMs("verify"),
-    run: async (p: { job: string; round?: number }) => {
+    run: async (p: { job: string; round?: number }, ctx) => {
       const round = Number(p.round ?? 0);
       const st = await getJobState(p.job);
       const lf = st?.artifactId ? await listFiles(st.artifactId) : null;
@@ -397,6 +489,27 @@ export function registerBuildHandlers(deps: BuildDeps): void {
       // "Present but empty" counts as missing. A zero-byte file satisfies a filename check and nothing else.
       const missing = planned.filter((path) => !have.has(path));
       const issues = healed.issues.length || healed.changes.length ? healed.issues : lintArtifact(files);
+
+      // ── A REPAIR IS JUDGED BY ITS GOAL, NOT BY ITS FILE LIST ────────────────────────────────────────
+      // "Every planned file exists" was the whole acceptance test, and for a repair it was already true
+      // before the repair started — which is how a job that changed nothing reported 12/12 and drained.
+      // For a repair, `verify` does the mechanical healing, records the deterministic verdict, and hands
+      // the loop to goalcheck, which decides whether another round is warranted. Nothing here may declare
+      // a repair finished.
+      if (st?.repair) {
+        const verdict = evaluateRepair(st, files, issues);
+        const roundNow = Math.max(0, Number(st.repair.round ?? round));
+        await putJobState(p.job, {
+          ...st, complete: missing.length === 0, missing, issues, healed: healed.changes,
+          repair: {
+            ...st.repair, ...verdict.state, round: roundNow,
+            failed: [...new Set([...(st.repair.failed ?? []), ...verdict.unresolved].map(String))],
+          },
+        });
+        await enqueue(p.job, [{ kind: "goalcheck", payload: { job: p.job, round: roundNow }, seq: 99.5, needs: ctx.step.id, priority: 3, dedupe: `goalcheck:${st.repair.runKey ?? "0:0"}:${roundNow}` }]);
+        return { repair: true, ok: verdict.resolved, complete: missing.length === 0, round: roundNow, ...verdict.report };
+      }
+
       const broken = [...new Set(issues.map(issuePath).filter((path) => path && have.has(path) && planned.includes(path)))];
       // `filesComplete` = every planned file exists. `ok` also requires a clean lint. A build that
       // produced every file and still throws at parse time used to report itself complete — that is
@@ -441,6 +554,165 @@ export function registerBuildHandlers(deps: BuildDeps): void {
       };
     },
   });
+
+  /*  goalcheck — the loop's only terminal authority. It asks a question no other step asks: is the
+   *  reported failure gone, and did anything actually change to get there?
+   *
+   *  Three outcomes, and all three are explicit:
+   *    resolved    every target exists, is lint-clean, and changed during this round.
+   *    stopped     the user pressed stop. Nothing further is enqueued, ever.
+   *    another round  the goal is unmet and rounds remain — this is what "keep working until it is fixed"
+   *                means in a system whose work must fit inside 60-second invocations. The round is not a
+   *                retry of the same instruction: `diagnose` re-derives the findings and tells the repair
+   *                that the previous attempt left the file unchanged, so the next model call has new
+   *                information instead of the same prompt it already failed to act on.
+   *
+   *  Bounded by MAX_REPAIR_ROUNDS and the job budget, so "until it is fixed" cannot mean "forever". */
+  registerHandler("goalcheck", {
+    maxMs: stepMs("goalcheck"),
+    run: async (p: { job: string; round?: number }) => {
+      const st = await getJobState(p.job);
+      if (!st?.repair) return { skipped: "not a repair job" };
+      const id = Number(st.artifactId);
+      // Heal before judging, exactly as verify does for a build: a repair that introduced a missing export
+      // or left TypeScript in a .js file is judged on the file as it will actually be SERVED, not on the
+      // bytes the model returned. Healing counts as a real change, because it is one.
+      if (Number.isInteger(id) && st.session) await healAndSave(String(st.session), id).catch(() => null);
+      const lf = Number.isInteger(id) ? await listFiles(id) : null;
+      const files = lf?.files ?? [];
+      const round = Math.max(0, Number(st.repair.round ?? p.round ?? 0));
+      const verdict = evaluateRepair(st, files, lf ? lintArtifact(files) : []);
+      const rootCauses = verdict.report.rootCauses as string[];
+      const whatWasWrong = rootCauses.length ? rootCauses.join("\n") : String(st.repair.errors ?? "").slice(0, 300);
+      const goal = String(st.repair.goal ?? "");
+
+      const finish = async (outcome: "resolved" | "stopped" | "exhausted" | "budget", extra: Record<string, unknown> = {}) => {
+        const unresolved = verdict.unresolved;
+        await putJobState(p.job, {
+          ...st, finishedAt: Date.now(), complete: outcome === "resolved",
+          repair: {
+            ...st.repair, ...verdict.state, resolved: outcome === "resolved", outcome, whatWasWrong, round,
+            failed: [...new Set([...(st.repair.failed ?? []), ...unresolved].map(String))],
+          },
+          // The card renders `conform`; for a repair the verdict IS the conformance answer ("is this
+          // what was asked for" = "is the reported failure gone"), so it is written in the same shape
+          // rather than teaching every reader a second one.
+          conform: { matches: outcome === "resolved", built: goal, mismatches: outcome === "resolved" ? [] : unresolved, extra: [], repair: true, outcome, whatWasWrong, ts: Date.now() },
+        });
+        return { repair: true, outcome, round, goal, unresolved, whatWasWrong, ...extra };
+      };
+
+      if (st.repair.stopped) return await finish("stopped", { stopped: true });
+      if (verdict.resolved) return await finish("resolved", { resolved: true });
+      // A round that is allowed to run must also be a round that CAN run: the same budget guard verify
+      // uses, so a job that has spent its ceiling reports failure instead of enqueueing work nobody will
+      // ever pay for.
+      const spent = await stepCountSince(p.job, Number(st.repair.firstStepId ?? 0));
+      const budget = jobStepBudget(Math.max(1, (st.repair.targets ?? []).length)) + 4 * MAX_REPAIR_ROUNDS;
+      const attempts = round + 1; // round is 0-based; this is "how many tries including this one"
+      const maxRounds = Number(st.repair.maxRounds ?? MAX_REPAIR_ROUNDS);
+      if (attempts >= maxRounds || spent >= budget) {
+        const why = attempts >= maxRounds
+          ? `the repair ran ${attempts} round(s) without resolving the reported failure`
+          : `this job has run ${spent} tasks against a budget of ${budget}`;
+        await enqueue(p.job, [{ kind: "report_blocked", payload: { job: p.job, reason: why, unresolved: verdict.unresolved }, priority: 10, dedupe: `repair-exhausted:${st.repair.runKey ?? p.job}` }]);
+        return await finish("budget", { exhausted: true, why });
+      }
+      // A STOP THAT ARRIVED WHILE THIS STEP WAS RUNNING STILL STOPS THE JOB. `stopJob` marks the queue
+      // terminal, but a goalcheck that was already executing reads its snapshot of state at entry — so the
+      // intent is re-read from the database here, at the only moment that matters: before creating work.
+      const fresh = await getJobState(p.job);
+      if (fresh?.repair?.stopped) {
+        await putJobState(p.job, { ...fresh, repair: { ...fresh.repair, ...verdict.state, resolved: false, outcome: "stopped" } });
+        return { repair: true, outcome: "stopped", round, unresolved: verdict.unresolved, stopped: true };
+      }
+      // NEXT ROUND: re-diagnose (which re-reads the ask and the CURRENT files, and records the new
+      // round-start fingerprints), then a fresh goalcheck gated on the builds that diagnose creates.
+      const runKey = String(st.repair.runKey ?? "0:0");
+      const [diagId] = await enqueue(p.job, [{ kind: "diagnose", payload: { job: p.job, round: round + 1 }, seq: 300 + round * 50, priority: 4, dedupe: `repair-round:${runKey}:${round + 1}` }]);
+      await enqueue(p.job, [{ kind: "goalcheck", payload: { job: p.job, round: round + 1 }, seq: 399 + round * 50, needs: diagId, gate: "build", priority: 3, dedupe: `goalcheck:${runKey}:${round + 1}` }]);
+      await putJobState(p.job, {
+        ...st,
+        repair: {
+          ...st.repair, ...verdict.state, round: round + 1, why: verdict.state.why,
+          failed: [...new Set([...(st.repair.failed ?? []), ...verdict.unresolved].map(String))],
+        },
+      });
+      return { repair: true, outcome: "round", round: round + 1, unresolved: verdict.unresolved, why: verdict.state.why, goal };
+    },
+  });
+}
+
+/** THE DETERMINISTIC VERDICT ON A REPAIR ROUND.
+ *
+ *  Three ways a target can still be unfixed, and each is a fact read off the artifact rather than an
+ *  opinion: it is missing/empty; the static lint still names it; or it is BYTE-IDENTICAL to how the round
+ *  found it, which means the round did no work at all regardless of what the model said. The third check
+ *  is the one that would have caught the reported run: three files "repaired", the queue drained, and
+ *  render.js exactly as it was.
+ *
+ *  `rootCauses` come from the repair calls themselves, so the closing report can answer the user's actual
+ *  question — "say what was wrong" — with the model's own words about the defect it removed. */
+export function evaluateRepair(st: any, files: { path: string; content: string }[], issues: string[]) {
+  const repair = st?.repair ?? {};
+  const targets: string[] = (repair.targets ?? []).map(String).filter(Boolean);
+  // WHAT THIS ROUND WAS ASKED TO FIX — which is not always every target: round 2+ skips files an earlier
+  // round already repaired, and those must not be re-judged as "unchanged".
+  const attempted: string[] = ((repair.roundTargets ?? repair.targets ?? []) as unknown[]).map(String).filter(Boolean);
+  const byPath = new Map(files.map((f) => [f.path, f.content]));
+  const roundStart: Record<string, string> = repair.roundStart ?? {};
+  const lintBy = new Map<string, string[]>();
+  for (const issue of issues) {
+    const m = /^([^\s:]+):\s*(.+)$/.exec(String(issue ?? ""));
+    if (!m) continue;
+    const arr = lintBy.get(m[1]);
+    if (arr) arr.push(m[2]); else lintBy.set(m[1], [m[2]]);
+  }
+  const unresolved: string[] = [];
+  const why: Record<string, string> = {};
+  for (const t of attempted) {
+    const content = byPath.get(t);
+    if (content === undefined || !content.trim()) { unresolved.push(t); why[t] = "the file is still missing or empty"; continue; }
+    const lint = lintBy.get(t) ?? [];
+    if (lint.length) { unresolved.push(t); why[t] = `static defects remain: ${lint[0]}`; continue; }
+    if (roundStart[t] !== undefined && fingerprint(content) === roundStart[t]) {
+      unresolved.push(t);
+      why[t] = "this round left the file byte-identical, so the reported failure cannot have been fixed by it — take a different approach";
+    }
+  }
+  const resolved = targets.length > 0 && attempted.length > 0 && unresolved.length === 0;
+  const rootCauses = Object.entries(repair.rootCauses ?? {})
+    .filter(([path]) => targets.includes(path))
+    .map(([path, cause]) => `${path}: ${String(cause)}`)
+    .slice(0, 8);
+  const state = { unresolved, resolved, why, resolvedAt: resolved ? (repair.resolvedAt ?? Date.now()) : (repair.resolvedAt ?? null) };
+  return {
+    resolved, unresolved, state,
+    report: { goal: String(repair.goal ?? ""), targets, unresolved, why, rootCauses, whatWasWrong: rootCauses.join("\n"), primary: repair.primary ?? targets[0] ?? null },
+  };
+}
+
+/** STOP A JOB, SERVER-SIDE.
+ *
+ *  The client's stop button used to set a local flag on the polling loop and nothing else: the steps stayed
+ *  in the queue, so the interval val kept running them after the tab was closed and the "stopped" repair
+ *  kept spending. A stop that does not stop the work is worse than no stop button, because the user
+ *  believes they have stopped it. This marks every unstarted step terminal, records the reason on the job,
+ *  and is what the client now calls before it stops polling. A step already executing finishes (killing an
+ *  isolate mid-write is how artifacts lose files); the goalcheck that follows it sees `stopped` and
+ *  enqueues nothing further. */
+export async function stopJob(job: string, reason = "stopped by the user"): Promise<{ job: string; stopped: number; repair: boolean }> {
+  const msg = String(reason ?? "").slice(0, 200);
+  const r = await run(sql`UPDATE step SET status='skipped', error=${msg}, lease_until=0, updated=${Date.now()} WHERE job = ${job} AND status IN ('ready','running')`);
+  const st = await getJobState(job);
+  if (st) {
+    const stoppedAt = Date.now();
+    await putJobState(job, st.repair
+      ? { ...st, finishedAt: stoppedAt, complete: false, repair: { ...st.repair, stopped: true, stoppedAt, stopReason: msg, outcome: "stopped" },
+          conform: { matches: false, built: String(st.repair.goal ?? ""), mismatches: (st.repair.unresolved ?? []).map(String), extra: [], repair: true, outcome: "stopped", whatWasWrong: st.repair.whatWasWrong ?? "", ts: stoppedAt } }
+      : { ...st, stopped: true, stoppedAt, finishedAt: stoppedAt, complete: false });
+  }
+  return { job, stopped: r.ok ? Number((r.value as any)?.rowsAffected ?? 0) : 0, repair: !!st?.repair };
 }
 
 /** Abandon the unstarted tasks of every OTHER build job in this session.
@@ -455,6 +727,17 @@ export async function supersedeOtherJobs(session: string, keep: string): Promise
 }
 
 /** How many tasks this job has created so far, in any state. */
+/** Tasks a job has spent SINCE a given step id.
+ *
+ *  A repair shares its job id with the build of the same artifact (same namespace, same progress card),
+ *  so `stepCount(job)` counts the ORIGINAL BUILD's steps too: on a 12-file artifact the repair was born
+ *  already over a 24-task budget and reported "could not fix it" after one round. The budget must measure
+ *  what THIS repair has spent, not what the artifact cost to create. */
+export async function stepCountSince(job: string, sinceId: number): Promise<number> {
+  const r = await raw<{ n: number }>(sql`SELECT COUNT(*) AS n FROM step WHERE job = ${job} AND id >= ${sinceId}`);
+  return r.ok ? Number((r.value[0] as any)?.n ?? 0) : 0;
+}
+
 export async function stepCount(job: string): Promise<number> {
   // Was `SELECT id ... ` then `.length` — every row of a job pulled across the network to produce one
   // integer. A 24-file build is ~30 rows of payload JSON transferred to count to 30.
@@ -492,6 +775,12 @@ export async function jobTasks(job: string, rows?: any[]) {
  *
  *  The build STEPS are the plan when there is no manifest. They always were; nothing asked them. */
 export async function plannedPathsFor(job: string, st: any, knownBuildPaths?: string[]): Promise<string[]> {
+  // A REPAIR'S PLAN IS ITS TARGETS. The synthetic repair manifest lists EVERY file in the artifact (the
+  // builders need the full file list for context), so reading it as the plan made `complete` mean "every
+  // file in the app exists" — a condition that was already true before the repair started. That is how a
+  // job whose only job was to fix render.js reported 12/12 and drained without touching render.js.
+  const targets: string[] = (st?.repair?.targets ?? []).map(String).filter(Boolean);
+  if (targets.length) return [...new Set(targets)];
   const fromManifest: string[] = (st?.manifest?.files ?? []).map((f: any) => String(f.path)).filter(Boolean);
   if (fromManifest.length) return fromManifest;
   // buildProgress has already read every step row for this job, including the build payloads this
@@ -539,14 +828,48 @@ export async function buildProgress(job: string, stepRows?: any[]) {
   ]);
   const present = new Set((lf?.files ?? []).filter((f) => isBuilt(f.content)).map((f) => f.path));
   const missing: string[] = planned.filter((path) => !present.has(path));
+  // FOR A REPAIR, "BUILT" MEANS "KNOWN GOOD", NOT "THE FILE EXISTS". Every target of a repair already
+  // exists — that is why it has a bug to fix — so counting existence reported 1/1 before anything had run,
+  // and kept reporting it while the file was still broken. `failed` is the accumulated verdict.
+  const repairTargets: string[] = (st?.repair?.targets ?? []).map(String).filter(Boolean);
+  const repairFailed = new Set(((st?.repair?.failed ?? []) as unknown[]).map(String));
   const drained = (by.ready ?? 0) + (by.running ?? 0) === 0;
+  // ── WHAT A REPAIR TELLS ITS DRIVER ────────────────────────────────────────────────────────────────
+  // The client's polling loop needs to know the difference between "the queue drained" and "the work is
+  // finished", and for a repair those are different questions (the reported run was drained, unchanged,
+  // and still broken). `settled` is the one bit the loop stops on: resolved, stopped, exhausted, or — for
+  // a build — simply drained. Everything else is detail for the card.
+  const repair = st?.repair ?? null;
+  const resolved = repair ? repair.resolved === true : null;
+  const stopped = repair ? repair.stopped === true : st?.stopped === true;
+  // 1-based, because it is displayed: `round` is 0-based internally (round 0 is the first attempt).
+  const rounds = repair ? Number(repair.round ?? 0) + 1 : null;
+  const maxRounds = repair ? Number(repair.maxRounds ?? MAX_REPAIR_ROUNDS) : null;
+  const outcome = repair ? String(repair.outcome ?? (repair.resolved ? "resolved" : stopped ? "stopped" : drained ? "paused" : "working")) : null;
+  const settled = stopped || (repair ? resolved === true || outcome === "exhausted" || outcome === "budget" : drained);
   return {
     job, by, files, artifactId: st?.artifactId ?? null, title: st?.title ?? "",
     done: drained,
     complete: drained && planned.length > 0 && missing.length === 0,
     plannedFiles: planned.length,
-    builtFiles: Math.max(0, planned.length - missing.length),
+    builtFiles: repairTargets.length
+      ? repairTargets.filter((t) => !repairFailed.has(t)).length
+      : Math.max(0, planned.length - missing.length),
     missing,
+    // Repair shape: the goal it is judged against, this round, and what is still broken.
+    kind: repair ? "repair" : "build",
+    goal: repair ? String(repair.goal ?? repair.errors ?? "") : String(st?.ask ?? "").slice(0, 300),
+    rounds, maxRounds, resolved, stopped, outcome, settled,
+    unresolved: repair ? (repair.unresolved ?? []) : [],
+    // WHAT THIS REPAIR IS ABOUT. `files` lists every build step the JOB ever had — including the previous
+    // build's steps, because a repair reuses the artifact's job — so the reply and the card must read the
+    // repair's own targets, not every file that was ever built here.
+    targets: repair ? (repair.targets ?? []) : [],
+    roundTargets: repair ? (repair.roundTargets ?? []) : [],
+    untouched: repair ? (repair.untouched ?? []) : [],
+    primary: repair?.primary ?? null,
+    whatWasWrong: repair ? String(repair.whatWasWrong ?? "") : "",
+    tried: repair ? Object.keys(repair.rootCauses ?? {}) : [],
     failedSteps: (by.failed ?? 0) + (by.blocked ?? 0),
     // `complete` means every planned file exists. `conform` means the planned files were the right ones.
     // A build can be complete and wrong, and that combination is the whole reported complaint, so it is
