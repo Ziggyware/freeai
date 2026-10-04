@@ -13,6 +13,7 @@
 import { all, one, type Result, run, sql } from "./db.ts";
 import { pruneSession } from "./db.ts";
 import { type ArtFile, deleteFile, lintArtifact, listFiles, qualityReport, readFile, saveArtifact, writeFile } from "./artifacts.ts";
+import { healAndSave } from "./heal.ts";
 import { evalJs, retrieveFacts, webSearch, writeFact } from "./app-helpers.ts";
 
 export async function renameSession(id: string, name: string): Promise<void> {
@@ -215,10 +216,11 @@ export const TOOLS: Record<string, Tool> = {
       const r = await saveArtifact(ctx.session, t, k, String(content), Array.isArray(files) ? (files as ArtFile[]) : [], ctx.turn?.artifactId ?? null);
       if (!r.ok) return { error: r.error };
       if (ctx.turn) { ctx.turn.artifactId = r.value.id; ctx.turn.artifactTitle = r.value.title; }
+      const healed = await healAndSave(ctx.session, r.value.id);
       const lf = await listFiles(r.value.id);
-      const issues = lf ? lintArtifact(lf.files) : [];
+      const issues = healed.issues.length ? healed.issues : (lf ? lintArtifact(lf.files) : []);
       const quality = lf ? qualityReport(lf.files) : [];
-      return { ok: true, id: r.value.id, url: `/artifact/${r.value.id}/`, title: r.value.title, files: lf?.files.map((f) => f.path) ?? [], issues: issues.length ? issues : undefined, quality: quality.length ? quality : undefined, hint: issues.length ? "Fix these with update_artifact before answering." : undefined };
+      return { ok: true, id: r.value.id, url: `/artifact/${r.value.id}/`, title: r.value.title, files: lf?.files.map((f) => f.path) ?? [], issues: issues.length ? issues : undefined, quality: quality.length ? quality : undefined, healed: healed.changes.length ? healed.changes : undefined, hint: issues.length ? "Fix these with update_artifact before answering." : undefined };
     },
   },
   read_artifact: {
@@ -348,10 +350,11 @@ export const TOOLS: Record<string, Tool> = {
       for (const [p, c] of buf) { const w = await writeFile(aid, p, c); if (!w.ok) failed.push(`${p}: write failed`); }
       if (Array.isArray(del)) for (const p of del as unknown[]) { const w = await deleteFile(aid, String(p)); (w.ok ? applied : failed).push(`${p}: ${w.ok ? "deleted" : "not deleted"}`); }
       if (ctx.turn) ctx.turn.artifactId = aid;
+      const healed = await healAndSave(ctx.session, aid);
       const lf = await listFiles(aid);
-      const issues = lf ? lintArtifact(lf.files) : [];
+      const issues = healed.issues.length ? healed.issues : (lf ? lintArtifact(lf.files) : []);
       const quality = lf ? qualityReport(lf.files) : [];
-      return { ok: failed.length === 0, id: aid, url: `/artifact/${aid}/`, applied, failed: failed.length ? failed : undefined, files: lf?.files.map((f) => f.path), issues: issues.length ? issues : undefined, quality: quality.length ? quality : undefined };
+      return { ok: failed.length === 0, id: aid, url: `/artifact/${aid}/`, applied, failed: failed.length ? failed : undefined, files: lf?.files.map((f) => f.path), issues: issues.length ? issues : undefined, quality: quality.length ? quality : undefined, healed: healed.changes.length ? healed.changes : undefined };
     },
   },
   web_search: {

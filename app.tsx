@@ -907,13 +907,18 @@ async function runAI(
       const did = (result.toolEvents ?? []).map((e) => `${e.tool}${e.error ? " (failed)" : ""}: ${JSON.stringify(e.args).slice(0, 160)}`).join("\n") || "(no tools)";
       const aid = [...(result.toolEvents ?? [])].reverse().map((e) => Number((e.result as any)?.id)).find((n) => Number.isInteger(n)) ?? Number(settings.focus?.id);
       let quality = "(no artifact this turn)";
-      if (Number.isInteger(aid) && APP_RX.test(text)) { const lf = await listFiles(aid); if (lf) { const q = qualityReport(lf.files); quality = q.length ? `artifact #${aid}: ${lf.files.length} files\n` + q.map((x) => "- " + x).join("\n") : `artifact #${aid} clears the rubric`; } }
+      let lint: string[] = [];
+      if (Number.isInteger(aid) && APP_RX.test(text)) { const lf = await listFiles(aid); if (lf) { lint = lintArtifact(lf.files); const q = qualityReport(lf.files); quality = (lint.length ? `LINT (must fix):\n` + lint.map((x) => "- " + x).join("\n") + "\n" : "") + (q.length ? `polish notes:\n` + q.map((x) => "- " + x).join("\n") : `artifact #${aid} clears the rubric`); } }
       const r = await callInference(
         [{ role: "system", content: "You audit whether a task is finished. Output only JSON." }, { role: "user", content: renderPrompt("completion", { ask: text.slice(0, 3000), did, reply: (result.reply ?? "").slice(0, 3000), quality }, settings.prompts, settings.examples) }],
         undefined, "fast", Math.min(12_000, requestLeft() - 4_000), { expect: 300, maxTokens: 500, router: settings.router, keyPolicy: settings.keyPolicy, vendorOrder: settings.vendorOrder },
       );
       const raw = String(r.message?.content ?? ""); const j = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
-      completion = { done: j.done !== false && !(Number(j.quality) > 0 && Number(j.quality) < 4), remaining: Array.isArray(j.remaining) ? j.remaining.filter((x: unknown) => typeof x === "string").slice(0, 8) : [] };
+      const remaining = Array.isArray(j.remaining) ? j.remaining.filter((x: unknown) => typeof x === "string").slice(0, 8) : [];
+      // Lint errors are remaining work. Quality/polish scores are not — forcing another turn for
+      // "add 900 lines" is how a working app became a broken one.
+      if (lint.length) remaining.unshift(...lint.slice(0, 4));
+      completion = { done: lint.length === 0 && j.done !== false && remaining.length === 0, remaining: remaining.slice(0, 8) };
       if (completion.remaining.length === 0) completion.done = true;
     } catch { completion = null; }
   }
