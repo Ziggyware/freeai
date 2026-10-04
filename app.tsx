@@ -219,10 +219,9 @@ export async function agentLoop(
   const toolEvents: ToolEvent[] = [];
   const seen = new Map<string, unknown>(); // tool+args → result, for the repeat guard
   // The bug this closes: a model retrying the EXACT SAME failing call (classically update_artifact editing
-  // a file that doesn't exist) with nothing forcing a change of approach. Each retry is a full model call —
-  // up to HARD_TIMEOUT_MS(30s) of real network time — so from outside the app just sits there for tens of
-  // seconds to minutes across hop after hop until BUDGET.loopHops/timeLeft finally cuts it off. The read-only
-  // repeat guard just below only ever covered 4 tools and only ever handled IDENTICAL-success loops (a model
+  // a file that doesn't exist) with nothing forcing a change of approach. Each retry is a full inference
+  // request, so from outside the app it can sit there across hop after hop until BUDGET.loopHops/timeLeft
+  // cuts it off. The read-only repeat guard below covered only four tools and identical-success loops (a model
   // re-reading instead of acting); this is the general case — identical FAILURE loops, any tool.
   const failedSigs = new Map<string, string>(); // tool+args → last failure summary, for the stuck-loop guard
   let sessionName: string | undefined;

@@ -191,16 +191,10 @@ export async function callInference(
         body.omni_expect_tokens = Math.min(expect, 2000);
       }
       const wait = sizeBound ? 0 : 1200 * retry;
-      // THE NO_BUDGET BUG. This guard used a literal 4000 while the router refuses to contact a single
-      // provider with less than ROUTER_MIN_ATTEMPT_MS (5000). So it admitted a retry whenever 4000ms
-      // remained after the wait, handed the router 4000-4999ms, and the router - correctly - contacted
-      // ZERO of 34 providers and returned NO_BUDGET. The user saw "ALL_PROVIDERS_EXHAUSTED", a
-      // provider-shaped message for this loop's own arithmetic, on a call whose caller had honestly
-      // granted a full 20s. The observed deadlineMs=4147 sits exactly in that window.
-      //
-      // TRANSPORT_MARGIN_MS is the round trip this loop spends BEFORE the router starts its own clock:
-      // serializing the body, the request itself, and the response read. Budget left after the wait must
-      // cover that AND a whole attempt, or there is no point starting.
+      // A client-side retry is another complete routed request, not another provider fallback within the
+      // current one. Start it only if the remaining grant can cover one minimum provider attempt plus the
+      // serialization/request/response margin; router-core.ts separately reserves room for fallback
+      // candidates inside each request.
       if (
         deadlineMs &&
         deadlineMs - (Date.now() - t0) - wait <

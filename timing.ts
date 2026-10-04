@@ -83,16 +83,14 @@ const BASE = {
   routerCeiling: 25_000,
   /** The longest one provider is allowed to hold a connection. */
   routerHardTimeout: 14_000,
-  /** How many provider attempts a single call must be able to contain. The router caps each attempt at
-   *  callDeadline / this, so it is the number that turns a caller's grant into a guarantee: 34 providers
-   *  are worthless if the first one may hold the entire budget.
+  /** Provider attempts a normal call should reserve room for. Each attempt gets a fair share of the
+   *  remaining deadline across up to this many candidates, so a stalled first provider cannot consume
+   *  the whole grant. Fast failures free time for additional candidates; slow failures still leave room
+   *  for the reserved attempts.
    *
-   *  THREE, not four, and the reason is worth stating because it is a real limit rather than a taste:
-   *  perCallMax cannot exceed ~20s. The last call a turn may start begins at chatTurnBudget - minCall -
-   *  returnReserve = 27s and must END before the 55s response deadline with margin, so 20s is the
-   *  ceiling, and 20s holds three 5s attempts plus transport but not four. Wanting more breadth per call
-   *  means a bigger response deadline, which the 60s invocation kill forbids — which is precisely why
-   *  wide work belongs in scheduled steps, where each step gets a fresh invocation and its own grant. */
+   *  THREE, not four: perCallMax is 14s, the minimum useful attempt is 4s, and transport needs 2s —
+   *  14s can fund three bounded attempts plus transport, but not four. Wider work belongs in scheduled
+   *  steps, where each step gets a fresh invocation and its own grant. */
   routerMinAttempts: 3,
 
   // ── the scheduler ───────────────────────────────────────────────────────────────────────────────
@@ -141,10 +139,13 @@ export function assertTimingInvariants(t: Record<Keys, number> = T): string[] {
   // THE ONE THAT SHIPPED BROKEN: a caller must never hand the router less than an attempt needs.
   need(t.minCall >= t.routerMinAttempt + t.transportMargin,
     `minCall (${t.minCall}) is below routerMinAttempt + transportMargin (${t.routerMinAttempt + t.transportMargin}) — a call the caller thinks is fundable reaches the router with too little, and the router answers NO_BUDGET as if every provider had failed`);
-  // THE SECOND ONE THAT SHIPPED BROKEN: a grant must contain more than one attempt, or "try 34
-  // providers" is a promise the arithmetic cannot keep.
+  // A single slow provider must not be able to consume the whole grant before fallback has a chance.
   need(t.perCallMax >= t.routerMinAttempt * t.routerMinAttempts + t.transportMargin,
-    `perCallMax (${t.perCallMax}) cannot contain ${t.routerMinAttempts} attempts of ${t.routerMinAttempt}ms plus ${t.transportMargin}ms of transport — one slow provider consumes the grant and the rest are never contacted, which the caller then reports as running out of its own budget`);
+    `perCallMax (${t.perCallMax}) cannot reserve ${t.routerMinAttempts} attempts of ${t.routerMinAttempt}ms plus ${t.transportMargin}ms of transport — a slow first provider could leave no time for fallback`);
+  need(t.routerMinAttempts >= 1,
+    `routerMinAttempts (${t.routerMinAttempts}) must reserve at least one provider attempt`);
+  need(t.routerHardTimeout >= t.routerMinAttempt,
+    `routerHardTimeout (${t.routerHardTimeout}) is below routerMinAttempt (${t.routerMinAttempt}), so no provider can receive a useful attempt`);
   need(t.routerHardTimeout <= t.routerCeiling,
     `routerHardTimeout (${t.routerHardTimeout}) exceeds the router's own ceiling (${t.routerCeiling})`);
   need(t.routerCeiling < PLATFORM.invocationKillMs,
@@ -166,8 +167,23 @@ if (violations.length) {
   throw new Error("timing.ts: invariant violation from environment overrides:\n" + violations.map((v) => "- " + v).join("\n"));
 }
 
-/** Re-exported so router-core.ts derives its per-attempt cap from the same number the invariant checks. */
+/** Re-exported so router-core.ts and the invariant checks share the same routing policy. */
 export const ROUTER_MIN_ATTEMPTS = T.routerMinAttempts;
+
+/** Allocate the remaining route deadline fairly across candidates. A slow provider must not be able to
+ *  consume the entire request before fallback begins. When time is short, reserve as many complete
+ *  minimum attempts as fit; when providers fail quickly, the next candidate can use the freed time.
+ *  `remainingMs` should already exclude the caller's serialization/return margin. */
+export function routerAttemptTimeoutMs(remainingMs: number, remainingTargets: number): number {
+  if (!Number.isFinite(remainingMs) || !Number.isFinite(remainingTargets)) return 0;
+  const remaining = Math.max(0, Math.floor(remainingMs));
+  const targets = Math.max(0, Math.floor(remainingTargets));
+  if (remaining < T.routerMinAttempt || targets === 0) return 0;
+  const attemptsThatFit = Math.floor(remaining / T.routerMinAttempt);
+  const reservedAttempts = Math.min(T.routerMinAttempts, targets, attemptsThatFit);
+  if (reservedAttempts < 1) return 0;
+  return Math.min(T.routerHardTimeout, Math.floor(remaining / reservedAttempts));
+}
 
 /** WHICH CLOCK OWNS THIS WORK. A chat turn owns the request; a scheduled step owns only its lease. */
 export type TimingContext = "chatTurn" | "scheduledStep" | "tool" | "sideCall";
