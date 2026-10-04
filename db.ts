@@ -137,7 +137,7 @@ interface Schema {
   };
   progress: { session: string; events: string; ts: number }; // live turn progress, polled by the chat UI
   artifact_file: { artifact_id: number; path: string; content: string; ts: number }; // multi-file artifacts; index.html mirrors artifact.content
-  // Durable counterpart to router-core.ts's in-memory breaker: that Map resets on every fresh isolate,
+  // Durable counterpart to router.ts's in-memory breaker: that Map resets on every fresh isolate,
   // which is why /health's instance roster could show 0 requests moments after a real, failed attempt —
   // the isolate that served the attempt and the one that served the /health check are not guaranteed to
   // be the same one. This table survives across isolates; the in-memory breaker still governs open/closed

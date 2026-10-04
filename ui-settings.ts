@@ -22,7 +22,7 @@ export const settingsHtml: string = `
       <label><input type="checkbox" data-k="liveThinking"> live thinking while generating</label>
     </section>
     <section><h4>router</h4>
-      <label>router url <input type="text" data-k="routerUrl" placeholder="https://router.val.run"></label>
+      <label>router url <input type="text" data-k="routerUrl" placeholder="blank = this app (the router is built in)"></label>
       <label>router key <input type="text" data-k="routerKey" placeholder="OMNI_CLIENT_KEYS entry (optional)"></label>
       <label>vendor order <input type="text" data-k="vendorOrder" placeholder="openrouter, groq, together  (blank = best quality first)"></label>
       <label>key rotation <select data-k="keyPolicy"><option value="">spread (default)</option><option value="depth">depth — one account until it fails, then the next</option><option value="rr">spread — least-used account first</option><option value="breadth">breadth — slot 0 of every vendor, then slot 1…</option></select></label>
@@ -233,10 +233,15 @@ const SETTINGS = (() => {
     if (!file) return;
     try { const j = JSON.parse(await file.text()); if (j.prompts && typeof j.prompts === 'object') s.prompts = j.prompts; if (typeof j.system === 'string') s.system = j.system; if (Array.isArray(j.skills)) s.skills = j.skills; if (j.editor && window.ART) ART.setSettings(j.editor); save(); syncForm(); renderSkills(); if (PR) showPrompt(prKey.value); } catch (e) { prState.textContent = 'import failed: invalid json'; }
   }
-  // ─── router status: instance roster from <router>/health (CORS-open) ───────
+  // ─── router status: instance roster from the router's /health ──────────────
+  // The router is a module of THIS app, so the default is a relative URL: it
+  // resolves to whatever origin is serving the page, which is the correct answer
+  // under a val alias, a custom domain, or a proxy. A value here means the
+  // operator pointed this deployment at a different router on purpose.
+  const routerBase = () => (s.routerUrl || '').replace(/\/+$/, '');
   async function routerStatus() {
     const st = document.getElementById('rt-state'), tb = document.getElementById('rt-table');
-    const base = (s.routerUrl || 'https://router.val.run').replace(/\/$/, '');
+    const base = routerBase();
     st.textContent = 'checking ' + base + ' …'; tb.innerHTML = '';
     try {
       const h = await (await fetch(base + '/health', { headers: s.routerKey ? { authorization: 'Bearer ' + s.routerKey } : {} })).json();
@@ -246,23 +251,24 @@ const SETTINGS = (() => {
       // cooling, then any last_error, then highest fail count — everything else keeps catalog order as the
       // stable tiebreak so a full-health board still reads the same as before this change.
       // A malformed key outranks everything: it is the one state that no cooldown, retry or reset will ever
-      // fix on its own. Then demoted (config-dead), then cooling, then anything with a last_error.
-      const urgency = (i) => (i.key_issue ? 0 : i.demoted ? 1 : i.cooling ? 2 : i.last_error ? 3 : 4);
+      // fix on its own. Then an instance whose model ids are all dead upstream, then cooling, then last_error.
+      const allDead = (i) => i.models > 0 && i.dead_models >= i.models;
+      const urgency = (i) => (i.key_issue ? 0 : allDead(i) ? 1 : i.cooling ? 2 : i.last_error ? 3 : 4);
       const sorted = (h.instances || []).map((i, idx) => ({ i, idx })).sort((a, b) =>
         urgency(a.i) - urgency(b.i) || (b.i.failed - a.i.failed) || (a.idx - b.idx)
       ).map((x) => x.i);
       const stateOf = (i) => i.key_issue ? 'KEY: ' + i.key_issue
-        : i.demoted ? 'demoted ' + Math.ceil(i.demoted.ms_left / 60000) + ' min'
+        : allDead(i) ? 'no live models (' + i.dead_models + '/' + i.models + ' dead)'
         : i.cooling ? 'cooling ' + Math.ceil(i.cooling.ms_left / 1000) + ' s' : 'ready';
-      const rows = sorted.map(i => '<tr><td>' + i.name + '</td><td>' + (i.key || '') + '</td><td>' + i.requests + '</td><td>' + i.ok + '</td><td>' + i.failed + '</td><td class="' + (i.key_issue || i.demoted ? 'dead' : i.cooling ? 'cool' : '') + '" title="' + MD.esc((i.demoted && i.demoted.reason) || (i.cooling && i.cooling.reason) || i.last_error || '') + '">' + stateOf(i) + '</td></tr>').join('');
+      const rows = sorted.map(i => '<tr><td>' + i.name + '</td><td>' + (i.key || '') + '</td><td>' + i.requests + '</td><td>' + i.ok + '</td><td>' + i.failed + '</td><td class="' + (i.key_issue || allDead(i) ? 'dead' : i.cooling ? 'cool' : '') + '" title="' + MD.esc((i.cooling && i.cooling.reason) || (allDead(i) ? i.dead_models + ' of ' + i.models + ' model ids dead upstream' : '') || i.last_error || '') + '">' + stateOf(i) + '</td></tr>').join('');
       tb.innerHTML = '<table class="rt"><tr><th>instance</th><th>key</th><th>req</th><th>ok</th><th>fail</th><th>state</th></tr>' + rows + '</table><div class="st-row" style="margin-top:6px"><button class="st-btn" onclick="SETTINGS.routerReset()">clear cooldowns</button> <button class="st-btn" onclick="SETTINGS.routerResetStats()">reset stats</button></div>';
     } catch (e) { st.textContent = 'unreachable: ' + e.message; }
   }
-  async function routerReset() { const base = (s.routerUrl || 'https://router.val.run').replace(/\/$/, ''); await fetch(base + '/api/reset', { method: 'POST', headers: { 'content-type': 'application/json', ...(s.routerKey ? { authorization: 'Bearer ' + s.routerKey } : {}) }, body: '{}' }).catch(() => {}); routerStatus(); }
+  async function routerReset() { const base = routerBase(); await fetch(base + '/api/reset', { method: 'POST', headers: { 'content-type': 'application/json', ...(s.routerKey ? { authorization: 'Bearer ' + s.routerKey } : {}) }, body: '{}' }).catch(() => {}); routerStatus(); }
   // Item 4: separate from routerReset() (which clears live cooldowns) — this clears the durable
   // requests/ok/failed counters so, e.g., three freshly re-bound OpenRouter models don't have their new
   // success rate permanently diluted by every failed attempt made against the old stale binding.
-  async function routerResetStats() { const base = (s.routerUrl || 'https://router.val.run').replace(/\/$/, ''); await fetch(base + '/api/reset-stats', { method: 'POST', headers: { 'content-type': 'application/json', ...(s.routerKey ? { authorization: 'Bearer ' + s.routerKey } : {}) }, body: '{}' }).catch(() => {}); routerStatus(); }
+  async function routerResetStats() { const base = routerBase(); await fetch(base + '/api/reset-stats', { method: 'POST', headers: { 'content-type': 'application/json', ...(s.routerKey ? { authorization: 'Bearer ' + s.routerKey } : {}) }, body: '{}' }).catch(() => {}); routerStatus(); }
   // Everything Claude would otherwise ask you to paste in, one click: router health, provider catalog,
   // this session's recent turns (with their routing flowcharts — see ui-timeline.ts/app.tsx's PassMeter),
   // your settings, and any runtime errors this page has actually thrown. All from endpoints that already
@@ -271,7 +277,7 @@ const SETTINGS = (() => {
   async function copyDiagnostics() {
     const st = document.getElementById('diag-state');
     st.textContent = 'gathering…';
-    const base = (s.routerUrl || 'https://router.val.run').replace(/\/$/, '');
+    const base = routerBase();
     const authHdr = s.routerKey ? { authorization: 'Bearer ' + s.routerKey } : {};
     const session = window.currentSession || 'default';
     const [health, providers, hist] = await Promise.allSettled([
@@ -327,9 +333,11 @@ const SETTINGS = (() => {
         if (group.length < 2) continue;
         const untried = group.filter(g => !g.requests);
         const active = group.filter(g => g.requests > 0);
-        // routeInference() (router-core.ts) returns on the FIRST successful attempt in plan order — it never
-        // walks past a winner — so a later key slot sitting at 0 requests while an earlier sibling is winning
-        // is the expected shape of a healthy multi-key provider, not an anomaly. Originally this fired
+        // routeChat() (router.ts) returns on the FIRST successful attempt in ranked order — it never walks
+        // past a winner — so a later key slot sitting at 0 requests while an earlier sibling is winning is
+        // the expected shape of a healthy multi-key provider, not an anomaly. (Vendor round-robin puts slot
+        // 0 of every vendor ahead of slot 1 of any vendor, which is the same shape one level up; only the
+        // "rr" key policy deliberately equalises slots, by leading with the least-used one.) Originally this fired
         // whenever untried.length && active.length, which is true for almost every multi-slot provider on
         // almost every turn (verified against a live diagnostics dump: 5 of 6 multi-slot provider groups
         // flagged this way, and in every one of those 5 an earlier sibling was successfully winning turns —
@@ -343,7 +351,7 @@ const SETTINGS = (() => {
       }
     }
     if (h && Array.isArray(h.key_issues)) for (const k of h.key_issues) flags.unshift('MALFORMED SECRET: ' + k.env + ' (' + k.instance + ') — ' + k.issue + '. Re-paste the raw token; no retry or reset will fix this.');
-    if (h && Array.isArray(h.instances)) for (const i of h.instances) if (i.demoted) flags.push('DEMOTED (config-dead, ' + Math.ceil(i.demoted.ms_left / 60000) + ' min left): ' + i.name + ' — ' + String(i.demoted.reason).slice(0, 140));
+    if (h && Array.isArray(h.instances)) for (const i of h.instances) if (i.models > 0 && i.dead_models >= i.models) flags.push('NO LIVE MODELS (' + i.dead_models + '/' + i.models + ' ids dead upstream): ' + i.name + ' — discovery will be attempted on the next call; clear cooldowns to retry sooner.');
     L.push('', '-- AUTO-FLAGGED ANOMALIES (' + flags.length + ') --', flags.length ? flags.map((f, i) => (i + 1) + '. ' + f).join('\n') : '(none detected)');
     // Per-provider outcome histogram across the recent turns' routing trails: answers "who is actually
     // winning, who only ever fails, who never gets reached" without reading every flowchart by hand.
@@ -352,15 +360,19 @@ const SETTINGS = (() => {
       const ev = (msg.meta && msg.meta.toolEvents || []).find(e => e.tool === 'route');
       const attempts = ev && ev.result && ev.result.attempts || [];
       for (const a of attempts) {
-        const row = outcomes.get(a.provider) || { won: 0, failed: 0, skipped: 0, demoted: 0, lat: [] };
+        // Fields the router's trail actually carries: pass>1 means the vendor's
+        // first model id was dead and a fallback within the same vendor answered;
+        // dropped means a 400 accused a parameter and the retry went without it.
+        const row = outcomes.get(a.provider) || { won: 0, failed: 0, skipped: 0, fallback: 0, repaired: 0, lat: [] };
         if (a.ok) { row.won++; if (a.latencyMs) row.lat.push(a.latencyMs); } else if (a.skipped) row.skipped++; else row.failed++;
-        if (a.demoted) row.demoted++;
+        if (a.pass > 1) row.fallback++;
+        if (a.dropped && a.dropped.length) row.repaired++;
         outcomes.set(a.provider, row);
       }
     }
     const med = (xs) => { if (!xs.length) return '-'; const s2 = [...xs].sort((a, b) => a - b); return s2[Math.floor(s2.length / 2)] + 'ms'; };
     L.push('', '-- PROVIDER OUTCOMES (last ' + recent.length + ' turns) --', outcomes.size
-      ? [...outcomes].sort((a, b) => b[1].won - a[1].won || b[1].failed - a[1].failed).map(([n, r]) => n.padEnd(34) + ' won=' + r.won + ' failed=' + r.failed + ' skipped=' + r.skipped + (r.demoted ? ' demoted=' + r.demoted : '') + ' median_ok=' + med(r.lat)).join('\n')
+      ? [...outcomes].sort((a, b) => b[1].won - a[1].won || b[1].failed - a[1].failed).map(([n, r]) => n.padEnd(34) + ' won=' + r.won + ' failed=' + r.failed + ' skipped=' + r.skipped + (r.fallback ? ' model_fallback=' + r.fallback : '') + (r.repaired ? ' param_repair=' + r.repaired : '') + ' median_ok=' + med(r.lat)).join('\n')
       : '(no routing trails in recent turns)');
     const text = L.join('\n');
     try { await navigator.clipboard.writeText(text); st.textContent = 'copied ' + text.length.toLocaleString() + ' chars ✓'; }

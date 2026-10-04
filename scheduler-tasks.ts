@@ -6,7 +6,7 @@ import { all, run, sql } from "./db.ts";
 import { getJobState } from "./app-build.ts";
 import { lintArtifact, listFiles } from "./artifacts.ts";
 import { registerHandler } from "./scheduler.ts";
-import { getInstanceRoster } from "./router-core.ts";
+import { getInstanceRoster } from "./router.ts";
 
 /** Housekeeping. Steps are append-heavy; completed rows outnumber live ones within a day. */
 registerHandler("retention", {

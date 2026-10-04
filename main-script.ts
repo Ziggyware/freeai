@@ -359,7 +359,7 @@ async function sendWith(text, extra) {
       let emptyReply = false;
       if (r.ok && final && !final.error) {
         // A 200 with nothing usable in it — blank, or nothing but dots (the same junk-generation
-        // signature app-infer.ts/router-core.ts guard against) — must never be accepted as a finished
+        // signature app-infer.ts/router.ts guard against) — must never be accepted as a finished
         // turn. toolEvents alone (no text) is legitimate (e.g. a pure tool-call turn); only flag when
         // there's neither real text nor recorded tool activity.
         const replyStripped = String(final.reply ?? '').replace(/\s+/g, '');
