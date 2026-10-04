@@ -410,12 +410,17 @@ async function sendWith(text, extra) {
       // A brand-new artifact with nothing previously loaded still honors autoOpen (that's what it's for).
       if (final.toolEvents?.some(e => /artifact/.test(e.tool) && !e.error)) { ART.listForSession(sessionId); const c = ART.current(); if (c && final.toolEvents.some(e => e.result?.id === c.id)) ART.refresh(c.id); else if (!c && ART.settings().autoOpen) { const ev = final.toolEvents.find(e => e.tool === 'create_artifact' && e.result?.id); if (ev) ART.open(ev.result.id); } }
       document.dispatchEvent(new CustomEvent('omni:turn', { detail: { text, final } }));
-      // A turn that SCHEDULED a build returns immediately with a job id and a drained-in-one-tick queue.
-      // Nothing moved it after that: the reply told the user to poll ?build_status and no code did. Drive
-      // it here - main-build-script.ts polls until the job is complete, drained, stalled or stopped.
-      if (final.scheduled && final.job && typeof BUILD !== 'undefined') BUILD.drive(final.job, sessionId);
       if (final.needsCompact && (SETTINGS.current().autoCompact ?? true)) COMPACT.run(false);
     } else if (final.sessionName) { loadSessions(); } // background turn: still refresh the sidebar's name list, just never the visible title bar
+    // A turn that SCHEDULED work returns immediately with a job id and a queue nothing has moved yet.
+    // Nothing moved it after that: the reply told the user to poll ?build_status and no code did. Drive it
+    // here - main-build-script.ts polls until the job is settled, cancelled or stopped.
+    //
+    // OUTSIDE own() ON PURPOSE: drive() checks `visible(session)` for every DOM write, so it is safe to
+    // start for a session the user has switched away from - and it MUST start, because otherwise the job
+    // sits untouched until this browser happens to load that session again. A scheduled fix that only
+    // begins when the user looks at it is the polling requirement wearing a different hat.
+    if (final.scheduled && final.job && typeof BUILD !== 'undefined') BUILD.drive(final.job, sessionId);
     if (willAuto) { if (own()) { finish(); barStatus.textContent = 'auto-continuing (' + (forever ? '∞' : autoLeft) + ' left)'; } else finish(); return sendWith(CONTINUE_PROMPT, { continuation: true, __autoLeft: autoLeft - 1, __stall: noProgress, sessionId, __ownsInflight: extra.__ownsInflight }); }
     // The chain is ending here even though the model was still mid-output (final.truncated) — say why,
     // instead of leaving the user to notice only that the live table vanished and nothing more happened.
@@ -429,7 +434,11 @@ async function sendWith(text, extra) {
     }
     // Completion audit says the ask is not finished: keep going with the remaining items (bounded, stop button aborts).
     const compLeft = extra.__compLeft ?? (forever ? Infinity : (SETTINGS.current().autoComplete ?? 4));
-    const rem = final.completion && !final.completion.done ? final.completion.remaining : [];
+    // A TURN THAT HANDED OFF TO THE DRIVER IS NOT A TURN TO AUDIT. When the server escalated this ask into
+    // a job, `completion` describes the INLINE work ("the answer did not contain an artifact yet"), which is
+    // no longer what is happening: continuing would send the model back to do by hand the work the queue is
+    // about to do, against files it is about to change. The driver owns this ask from here.
+    const rem = final.scheduled || final.escalated ? [] : (final.completion && !final.completion.done ? final.completion.remaining : []);
     const sameAsBefore = extra.followup && JSON.stringify(rem) === JSON.stringify(extra.followup);
     if (rem.length && compLeft > 0 && !sameAsBefore) {
       if (own()) { finish(); barStatus.textContent = 'not finished — continuing (' + (forever ? '∞' : compLeft) + ' rounds left)'; } else finish();

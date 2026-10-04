@@ -137,12 +137,17 @@ const ART = (() => {
     const uniq = [...new Set(lastErrors.map(x => x.replace(/\?v=\d+/g, '').replace(/:\d+[:\)]/, ':?)')))].slice(-E.errorsToAI); const key = uniq.join('|');
     const st = errFixed[cur.id] = errFixed[cur.id] || { rounds: 0, last: '', t: 0 };
     /* retry if error set changed, or 8s+ since last attempt (artifact may have been edited/reloaded) */
+    if (st.last !== key) st.escalated = false;   // a DIFFERENT failure is a new request, with its own budget
     if (st.last === key && (Date.now() - st.t < 8000)) return;
     /* E.autoFixRounds is offered in the settings panel as "rounds per artifact" and was never checked
        here - only the 8s/same-error damper was. A preview whose errors keep CHANGING therefore looped
        forever, spending a model call each round with no ceiling. maybeAutoFix() has always enforced its
        own cap; this is the same rule, using the number the user actually set. */
-    if (st.rounds >= Math.max(1, Number(E.autoFixRounds) || 3)) { askSt.textContent = 'auto-fix stopped (' + st.rounds + ' rounds)'; return; }
+    // THE INLINE BUDGET RUNNING OUT IS NOT THE REQUEST FAILING. It means the next attempt must be the
+    // durable one: the repair job re-diagnoses, repairs, re-checks and repeats by itself, survives a closed
+    // tab, and stops only when the reported errors are gone or the user presses stop. The old line said
+    // "auto-fix stopped (N rounds)" and left the errors on screen with nothing running.
+    if (st.rounds >= Math.max(1, Number(E.autoFixRounds) || 3)) { escalateRepair(st, uniq, st.rounds); return; }
     st.rounds++; st.last = key; st.t = Date.now(); askSt.textContent = 'auto-fixing ' + uniq.length + ' error' + (uniq.length > 1 ? 's' : '') + ' (round ' + st.rounds + ')';
     /* Enrich server-side first: the server has the artifact's source, so it can resolve every stack frame
        to real lines, the enclosing function and its scope chain. Sending the flat console strings instead
@@ -155,14 +160,39 @@ const ART = (() => {
           body: JSON.stringify({ artifactId: cur.id, reports: errReports.slice(-E.errorsToAI), maxRounds: Math.max(1, Number(E.autoFixRounds) || 3) }) });
         if (r.ok) {
           const j = await r.json();
-          if (j.exhausted) { askSt.textContent = 'auto-fix stopped after ' + j.round + ' rounds'; return; }
-          if (j.unchanged) { askSt.textContent = 'auto-fix stopped — last repair changed nothing'; return; }
           if (j.brief) detail = j.brief;
+          // The server's own inline-round ceiling is the same signal as the local one: stop retrying INSIDE
+          // a chat turn, hand the request to the durable repair job instead of declaring failure.
+          if (j.exhausted || j.unchanged) {
+            const st2 = errFixed[cur.id] = errFixed[cur.id] || { rounds: 0, last: '', t: 0 };
+            const why = j.unchanged ? 'the last inline repair changed nothing' : j.round + ' inline rounds are used';
+            const d = detail || uniq.join('\n');
+            escalateRepair(st2, uniq, st2.rounds, why + '; the preview still reports these errors:\n' + d);
+            return;
+          }
         }
       } catch (e) { /* enrichment is an optimisation, not a gate */ }
       const v = { ...vars(), errors: detail };
       sendWith(tpl(E.pFix, v), focusPayload() || {});
     })();
+  }
+  /** Inline rounds are spent: send ONE ask that the durable repair job picks up.
+   *
+   *  The client cannot run a background loop, and pretending it can is how "auto-fix stopped after 3 rounds"
+   *  became the answer to a request that said "fix everything". The server can: a repair job re-reads the
+   *  files, repairs only what is still broken, verifies that the round changed something, and repeats until
+   *  the failure is gone or it has exhausted its bounded rounds. So the last inline attempt is worded for
+   *  the job path and sent once per (artifact, error set). */
+  function escalateRepair(st, uniq, rounds, brief) {
+    if (!cur) return;
+    if (typeof sendWith !== 'function') { askSt.textContent = 'cannot send \u2014 reload the page'; return; }
+    if (st.escalated) { askSt.textContent = 'repair job already handed off \u2014 the BUILD card reports it (stop is on the card)'; return; }
+    st.escalated = true;
+    const v = { ...vars(), errors: String(brief || uniq.join('\n')).slice(0, 6000) };
+    askSt.textContent = 'inline rounds used (' + (rounds || 0) + ') \u2014 continuing as a durable repair job';
+    // The ask is an ordinary repair ask: the server decides whether it fits one turn or becomes a job, and
+    // if the inline attempt does not land the job takes over in the same response (wireTurn.after).
+    sendWith(tpl(E.pFix, v), focusPayload() || {});
   }
   function clearConsole() { conBody.innerHTML = ''; lastErrors = []; if (E.console !== 'open') con.hidden = true; }
   function hideConsole() { con.hidden = true; }

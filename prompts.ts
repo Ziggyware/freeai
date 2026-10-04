@@ -3,7 +3,7 @@
 // fetches this table from GET ?prompts to show defaults + placeholders.
 import { PROMPT_EXAMPLES } from "./prompt-examples.ts";
 
-export type PromptKey = "system" | "meta" | "firstExchange" | "plan" | "reconcile" | "critique" | "revise" | "reground" | "continue" | "summarize" | "workbench" | "skill" | "design" | "architect" | "builder" | "integrate" | "conform" | "digest" | "completion" | "brief" | "compact";
+export type PromptKey = "system" | "meta" | "firstExchange" | "plan" | "reconcile" | "critique" | "revise" | "reground" | "continue" | "summarize" | "workbench" | "skill" | "design" | "architect" | "builder" | "integrate" | "repair" | "conform" | "digest" | "completion" | "brief" | "compact";
 
 export const PROMPT_VARS: Record<PromptKey, string[]> = {
   system: ["date", "tools", "skills", "focus", "memory", "rojs", "user"],
@@ -22,6 +22,7 @@ export const PROMPT_VARS: Record<PromptKey, string[]> = {
   architect: ["ask", "user", "skills", "design"],
   builder: ["ask", "title", "path", "purpose", "exports", "imports", "shared", "manifest", "notes", "features", "visual"],
   integrate: ["id", "issues"],
+  repair: ["ask", "path", "title", "purpose", "goal", "findings", "current", "files", "user"],
   conform: ["ask", "title", "files", "readme"],
   digest: ["ask", "part", "n", "text"],
   completion: ["ask", "did", "reply", "quality"],
@@ -177,6 +178,49 @@ Rules: complete, runnable, idiomatic, no explanation. Match names and signatures
 Lint issues:
 {{issues}}`,
 
+  repair: `Repair ONE file of an existing artifact: {{path}} of "{{title}}". You are fixing a defect the
+user reported, not rebuilding the app. The file already works apart from this defect; everything else in
+it is load-bearing and must survive byte-for-byte.
+
+THE GOAL — the reported failure, verbatim:
+{{goal}}
+
+WHAT THE USER ASKED (context; the goal above is the acceptance test):
+"""
+{{ask}}
+"""
+
+The file's purpose in the manifest: {{purpose}}
+
+Defects identified for this file:
+{{findings}}
+
+Other files in the artifact (reference only — do not reproduce them, do not touch them):
+{{files}}
+
+THE FILE AS IT IS NOW ({{path}}):
+"""
+{{current}}
+"""
+
+Method: find the ROOT CAUSE, then make the smallest change that removes it. A symptom patch (a try/catch
+around the failure, a null check that hides it, a duplicate definition that shadows the broken one) is a
+failed repair. Read the line the error names, its enclosing scope, and how the values it uses are created.
+
+Output ONLY this JSON object, no prose and no code fences around it:
+{"rootCause": "<one or two sentences: what is actually wrong and why the failure follows>",
+ "edits": [{"find": "<exact text from the file above, occurring exactly once>", "replace": "<its replacement>"}],
+ "content": "<the complete file — ONLY when a targeted edit genuinely cannot express the fix; otherwise omit this key>",
+ "note": "<one line: what changed>"}
+
+Rules for the edit list:
+- Each \`find\` must be an exact, unique substring of the file above (whitespace included). If it occurs
+  zero or multiple times the edit is rejected and the repair does nothing — widen it until it is unique.
+- Prefer 1–3 small edits over a rewrite. Never reformat, re-indent, reorder imports, rename, or "clean up"
+  anything outside the defect.
+- If the file must be rewritten, send \`content\` and carry every untouched part over VERBATIM; state in
+  \`rootCause\` why an edit could not express the fix.
+{{user}}`,
   conform: `Did this build what was asked? Compare ONLY the request against what actually exists.
 
 THE REQUEST, VERBATIM:

@@ -180,6 +180,14 @@ BUILT: "Signal Dashboard" — index.html, tokens.css, style.css, chart.js, data.
 BUILT: "Tasks" — index.html, tokens.css, style.css, store.js, keys.js, render.js, persist.js, README.md
 {"matches": true, "built": "a task tracker with a keyboard shortcut map and IndexedDB persistence that runs from disk", "mismatches": [], "extra": []}`),
 
+  repair: ex("root-cause repairs", 
+`GOAL: Uncaught TypeError: THREE.WebGLRenderer is not a constructor (render.js:27)
+FILE render.js:27 — \`const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });\` — but three.module.js is a hand-written shim whose default export is a namespace object, so \`new THREE.WebGLRenderer\` constructs nothing.
+{"rootCause": "three.module.js exports the WebGL renderer as a named export (\`export function WebGLRenderer\`) and has no default export; the file imports a default/shim instead, so THREE.WebGLRenderer is undefined and \`new\` throws. The import must bind the named export.", "edits": [{"find": "import * as THREE from \'./three.module.js\';", "replace": "import { WebGLRenderer, Scene, PerspectiveCamera } from \'./three.module.js\';"}, {"find": "const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });", "replace": "const renderer = new WebGLRenderer({ canvas, antialias: true });"}], "note": "bind the named export; no other line touched"}`,
+`GOAL: Cannot read properties of null (reading \'addEventListener\') at bindUI (ui.js:6)
+FILE ui.js:6 — \`document.getElementById(\'toolbar\').addEventListener(...)\`, and index.html loads ui.js in <head>, so #toolbar does not exist yet.
+{"rootCause": "ui.js executes in <head> and binds #toolbar immediately, but the element is created later in the body; getElementById returns null and the property access throws.", "edits": [{"find": "bindUI();", "replace": "if (document.readyState === \'loading\') document.addEventListener(\'DOMContentLoaded\', bindUI, { once: true }); else bindUI();"}], "note": "bind after DOM is parsed; no markup or other script touched"}`),
+
   integrate: ex("integration passes",
 `read_artifact #41 all:true → findings: input.js imports { startTicker } from './timer.js' but timer.js exports start(); render.js draws before store exists (load order); README lists 12 features, "tempo ramp" not implemented anywhere → one update_artifact: edits (timer.js export rename, index.html script order), files: [ramp.js — full implementation of the ramp: linear BPM interpolation per bar, UI in index.html, actions in store.js]. Then lint is clean; acceptance checks walked one by one in the reply.`,
 `Lint: "state.js:120 empty function body — function exportJson() {}" → not deleted, implemented: serialize state (schema version + data), Blob download with a11y-labelled anchor, toast on success; and the matching importJson with validation errors surfaced in the UI.`),
